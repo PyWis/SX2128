@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.api import (
     admin, admin_dashboard, agency, alliances_api, auth, buildings, catalog,
@@ -12,6 +14,8 @@ from app.api import (
 )
 from app.database import init_db
 from app.services.superadmin import ensure_superadmin
+
+_FRONTEND = Path(__file__).parent.parent.parent / "frontend"
 
 
 @asynccontextmanager
@@ -54,3 +58,6 @@ app.include_router(chat_api.router)
 app.include_router(classifica_api.router)
 app.include_router(shop_api.router)
 app.include_router(admin_dashboard.router)
+
+if _FRONTEND.is_dir():
+    app.mount("/", StaticFiles(directory=_FRONTEND, html=True), name="frontend")
