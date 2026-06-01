@@ -89,6 +89,19 @@ Task trasversale: definire schema e migrazioni per le entità sotto. Tutte le qu
 
 Le epiche dettagliate (§5) sono raggruppate per sistema; ogni task riporta tra `[]` la fase consigliata.
 
+### Stato di avanzamento
+
+Lo scaffold full-stack è avviato in [`backend/`](backend/) (Python · FastAPI · SQLAlchemy) e
+[`frontend/`](frontend/) (SPA vanilla coerente col sito). Stato corrente:
+
+- **F0 — Fondamenta**: ✅ stack scelto, auth JWT, DB/ORM + modelli, modello server/shard (256 agenzie),
+  seed dati statici (10 culture, 53 vettori, equip, missili, licenze, prestiti), stato iniziale agenzia (§0.2).
+- **F1 — Tick & Economia**: ✅ tick giornaliero (§0.1), fedeltà lineare con reset (§1), flussi di bilancio +
+  default (§2), reclutamento con perk culturali (§3), assegnazione missioni + scaling nemico `E(t)` (§9.1/§9.4),
+  formule di combattimento/ricompensa testate (§9.5–9.7), co-finanziamento UG (§10).
+- Test: formule core + flusso end-to-end (auth → server → agenzia → recluta → tick) verdi (`backend/tests/`).
+- **F2–F7**: da implementare (le caselle sotto restano la traccia di lavoro).
+
 ---
 
 ## 5. Epiche e task per sistema
