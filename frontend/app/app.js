@@ -336,11 +336,23 @@ function renderVehicles(vehicles, pilots) {
 
 function _alarmBadge(alarm) {
   const cls = { verde: "ok", giallo: "warn", arancione: "warn", rosso: "bad" };
-  return `<span class="pill ${cls[alarm]||""}">${alarm.toUpperCase()}</span>`;
+  const icons = { verde: "●", giallo: "⚠", rosso: "🔴" };
+  return `<span class="pill ${cls[alarm]||""}">${icons[alarm]||""} ${alarm.toUpperCase()}</span>`;
 }
 
 function _mtypeLabel(t) {
-  return { terrestre: "Terrestre", lunare: "Lunare", intercept_terra: "Intercett. Terra", intercept_luna: "Intercett. Luna" }[t] || t;
+  return {
+    terrestre: "Terrestre", lunare: "Lunare",
+    intercept_terra: "Intercett. Terra", intercept_luna: "Intercett. Luna",
+    evacuazione: "Evacuazione",
+  }[t] || t;
+}
+
+function _missionDetail(m) {
+  if (m.mission_type === "evacuazione") {
+    return `${m.civili_da_salvare?.toLocaleString()} civili`;
+  }
+  return `Pn ${m.pn}`;
 }
 
 function renderMissions(missions, vehicles, fighters) {
@@ -348,32 +360,56 @@ function renderMissions(missions, vehicles, fighters) {
   const inflight = missions.filter(m => m.status === "in_progress");
   const done = missions.filter(m => m.status === "completed" || m.status === "failed");
 
+  // Group in-flight by vehicle (chains share the same return_day)
+  const inflightByVehicle = {};
+  inflight.forEach(m => {
+    const key = m.vehicle_id || m.id;
+    if (!inflightByVehicle[key]) inflightByVehicle[key] = [];
+    inflightByVehicle[key].push(m);
+  });
+
   const assignedRows = assigned.map(m => `
     <tr>
-      <td>${_alarmBadge(m.alarm)} ${_mtypeLabel(m.mission_type)}</td>
+      <td>${_alarmBadge(m.alarm)}<br><small>${_mtypeLabel(m.mission_type)}</small></td>
       <td>${m.target_lat?.toFixed(1)}°, ${m.target_lon?.toFixed(1)}°</td>
-      <td>Pn ${m.pn}</td>
+      <td>${_missionDetail(m)}</td>
       <td>~${m.reward_estimate} R</td>
       <td>gg ${m.deadline_day}</td>
-      <td><button class="sm" onclick="launchDialog(${m.id},'${m.mission_type}')">Lancia</button></td>
+      <td>
+        <button class="sm" onclick="launchDialog(${m.id},'${m.mission_type}')">Lancia</button>
+        ${m.chain_leg > 0 ? `<br><small class="muted">Tappa ${m.chain_leg}</small>` : ""}
+      </td>
     </tr>`).join("");
 
-  const inflightRows = inflight.map(m => `
+  const inflightRows = Object.values(inflightByVehicle).map(legs => {
+    legs.sort((a, b) => a.chain_leg - b.chain_leg);
+    const first = legs[0];
+    const isChain = legs.length > 1;
+    const eta = first.sortie_return_day != null ? `ETA gg ${first.sortie_return_day.toFixed(1)}` : "—";
+    return `
     <tr>
-      <td>${_alarmBadge(m.alarm)} ${_mtypeLabel(m.mission_type)}</td>
-      <td><span class="pill ok">In volo</span> ${m.sortie_return_day != null ? `ETA gg ${m.sortie_return_day.toFixed(1)}` : "—"}</td>
-      <td>Pn ${m.pn}</td>
-      <td>~${m.reward_estimate} R</td>
-      <td>${m.fighters?.length ? m.fighters.length + " comb." : "—"}</td>
-    </tr>`).join("");
+      <td>${_alarmBadge(first.alarm)}<br><small>${legs.map(l => _mtypeLabel(l.mission_type)).join(" → ")}</small></td>
+      <td><span class="pill ok">In volo</span>${isChain ? ` <span class="pill">${legs.length} tappe</span>` : ""}</td>
+      <td>${eta}</td>
+      <td>~${legs.reduce((s, l) => s + l.reward_estimate, 0).toFixed(0)} R</td>
+      <td>${first.fighters?.length ? first.fighters.length + " comb." : "—"}</td>
+    </tr>`;
+  }).join("");
 
   const doneRows = done.slice(0, 10).map(m => {
     const ok = m.status === "completed";
     const res = m.resolution;
-    const detail = res ? `Pg ${res.pg} vs Pn ${res.pn} [eff: ${res.pg_eff} vs ${res.pn_eff}]${res.ricompensa ? " · +" + res.ricompensa + " R" : ""}` : "";
+    let detail = "";
+    if (res) {
+      if (res.civili_salvati != null) {
+        detail = `${res.civili_salvati.toLocaleString()} civili salvati · +${res.ricompensa} R`;
+      } else {
+        detail = `Pg ${res.pg} vs Pn ${res.pn} [eff: ${res.pg_eff} vs ${res.pn_eff}]${res.ricompensa ? " · +" + res.ricompensa + " R" : ""}`;
+      }
+    }
     return `
     <tr>
-      <td>${_alarmBadge(m.alarm)} ${_mtypeLabel(m.mission_type)}</td>
+      <td>${_alarmBadge(m.alarm)}<br><small>${_mtypeLabel(m.mission_type)}</small></td>
       <td><span class="pill ${ok?"ok":"bad"}">${ok?"Successo":"Fallita"}</span></td>
       <td>gg ${m.assigned_day}</td>
       <td colspan="2"><small class="muted">${detail}</small></td>
@@ -703,7 +739,12 @@ function closeVDialog() { document.getElementById("vehicle-dialog").style.displa
 function launchDialog(missionId, mtype) {
   S._launchMid = missionId;
   S._launchIsIntercept = mtype.startsWith("intercept");
-  const classMap = { terrestre: "mission", lunare: "space_mission", intercept_terra: "fighter", intercept_luna: "space_fighter" };
+  S._launchIsEvac = mtype === "evacuazione";
+  const classMap = {
+    terrestre: "mission", lunare: "space_mission",
+    intercept_terra: "fighter", intercept_luna: "space_fighter",
+    evacuazione: "civilian",
+  };
   const needed = classMap[mtype];
   const vs = S.data.vehicles.filter(v => v.status === "barracks" && (!needed || v.vclass === needed));
   const vOpts = vs.map(v => `<option value="${v.id}">${v.project} (${v.vclass})</option>`).join("");
@@ -713,6 +754,16 @@ function launchDialog(missionId, mtype) {
       <input type="checkbox" class="f-sel" value="${f.id}" />
       ${f.name} (TABI ${f.tabi})
     </label>`).join(" ");
+
+  // chain: missioni assegnate compatibili con lo stesso tipo vettore
+  const chainable = S.data.missions.filter(m =>
+    m.status === "assigned" && m.id !== missionId &&
+    (classMap[m.mission_type] === needed || !needed)
+  );
+  const chainOpts = chainable.map(m =>
+    `<option value="${m.id}">[${m.alarm.toUpperCase()}] ${_mtypeLabel(m.mission_type)} (Pn ${m.pn}, gg${m.deadline_day})</option>`
+  ).join("");
+
   $("launch-content").innerHTML = `
     <div class="row" style="margin-bottom:10px">
       <div style="flex:2"><label>Vettore</label>
@@ -720,10 +771,16 @@ function launchDialog(missionId, mtype) {
       </div>
       <button class="sm ghost" style="align-self:flex-end" onclick="doSimulate(${missionId})">Simula</button>
     </div>
-    ${!S._launchIsIntercept ? `
+    ${!S._launchIsIntercept && !S._launchIsEvac ? `
     <div style="margin-bottom:10px">
-      <label>Combattenti (spunta per imbarcare):</label>
+      <label>Combattenti:</label>
       <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">${fGrid || '<span class="muted">Nessun combattente disponibile</span>'}</div>
+    </div>` : ""}
+    ${!S._launchIsEvac && chainable.length ? `
+    <div style="margin-bottom:10px;padding:8px;border:1px solid var(--border);border-radius:6px">
+      <label>Catena sortie §9.11 (opzionale — aggiungi tappe):</label>
+      <select id="lChain" multiple style="width:100%;height:80px;margin-top:4px">${chainOpts}</select>
+      <small class="muted">Ctrl+click per selezionare più tappe (max ${3})</small>
     </div>` : ""}`;
   $("sim-result").innerHTML = "";
   $("launch-err").textContent = "";
@@ -754,11 +811,17 @@ async function doLaunchMission() {
   const vid = Number($("lVehicle")?.value || 0);
   if (!vid) { $("launch-err").textContent = "Seleziona un vettore"; return; }
   const fids = Array.from(document.querySelectorAll(".f-sel:checked")).map(e => Number(e.value));
+  // chain legs: each selected chain mission gets the same fighter selection
+  const chainEl = $("lChain");
+  const chainLegs = chainEl
+    ? Array.from(chainEl.selectedOptions).map(opt => ({ mission_id: Number(opt.value), fighter_ids: fids }))
+    : [];
   try {
     const d = await req(`/api/agency/${S.serverId}/missions/${S._launchMid}/launch`, {
-      method: "POST", body: { vehicle_id: vid, fighter_ids: fids }
+      method: "POST", body: { vehicle_id: vid, fighter_ids: fids, chain_legs: chainLegs }
     });
-    logLine(`missione #${d.mission_id} lanciata · ETA ${d.eta_days.toFixed(1)} gg · rientro gg ${d.return_day.toFixed(1)}`);
+    const chain = d.chain_legs ? ` (catena ${d.chain_legs + 1} tappe)` : "";
+    logLine(`missione #${d.mission_id} lanciata${chain} · ETA ${d.eta_days.toFixed(1)} gg · rientro gg ${d.return_day.toFixed(1)}`);
     closeLDialog(); await refreshData();
   } catch (e) { $("launch-err").textContent = e.message; }
 }

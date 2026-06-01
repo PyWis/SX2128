@@ -1,15 +1,16 @@
-"""Lancio di una missione — GDD §9.10, §8."""
+"""Lancio di una missione — GDD §9.10, §8, §9.11."""
 from __future__ import annotations
 
 import math
 
 from sqlalchemy.orm import Session
 
+from app.gamedata import balance as B
 from app.gamedata.enums import MissionStatus, MissionType, VehicleClass
 from app.gamedata.vehicles import get_vehicle
 from app.models.core import Agency, Fighter, Mission, Pilot, Vehicle
 
-MACH_KMH = 1235.0  # 1 Mach in km/h (velocità approssimata a livello del mare)
+MACH_KMH = 1235.0
 
 
 class LaunchError(Exception):
@@ -17,7 +18,6 @@ class LaunchError(Exception):
 
 
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Distanza geodetica in km tra due punti lat/lon."""
     R = 6371.0
     dlat = math.radians(lat2 - lat1)
     dlon = math.radians(lon2 - lon1)
@@ -28,11 +28,30 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 
 def _eta_days(distanza_km: float, velocita: float) -> float:
-    """ETA in giorni di gioco: andata + ritorno (2 × distanza / velocità)."""
+    """ETA andata+ritorno (2×distanza) in giorni."""
     if velocita <= 0:
         return 1.0
     ore = (2 * distanza_km) / (velocita * MACH_KMH)
     return max(1.0, ore / 24.0)
+
+
+def _eta_chain_days(waypoints: list[tuple[float, float]], velocita: float) -> float:
+    """ETA catena: base→w1→w2→…→wN→base in giorni."""
+    if velocita <= 0:
+        return 1.0
+    total_km = sum(
+        _haversine_km(waypoints[i][0], waypoints[i][1],
+                      waypoints[i + 1][0], waypoints[i + 1][1])
+        for i in range(len(waypoints) - 1)
+    )
+    ore = total_km / (velocita * MACH_KMH)
+    return max(1.0, ore / 24.0)
+
+
+def _is_space_mission(mtype: MissionType) -> bool:
+    return mtype in (MissionType.INTERCETTAZIONE_LUNARE,
+                     MissionType.LUNARE,
+                     MissionType.EVACUAZIONE)
 
 
 def _get_mission(agency: Agency, mission_id: int, db: Session) -> Mission:
@@ -85,7 +104,7 @@ def _check_fighters_state(fighters: list[Fighter], vehicle: Vehicle) -> None:
 
 
 def _require_vehicle_type(mission_type: MissionType, vehicle: Vehicle) -> None:
-    """Valida che il tipo di vettore sia compatibile con il tipo di missione (§9.3)."""
+    """Valida compatibilità tipo vettore ↔ tipo missione (§9.3)."""
     vclass = vehicle.vclass
     if mission_type == MissionType.TERRESTRE:
         allowed = {VehicleClass.MISSION.value}
@@ -95,8 +114,10 @@ def _require_vehicle_type(mission_type: MissionType, vehicle: Vehicle) -> None:
         allowed = {VehicleClass.SPACE_FIGHTER.value}
     elif mission_type == MissionType.LUNARE:
         allowed = {VehicleClass.SPACE_MISSION.value}
+    elif mission_type == MissionType.EVACUAZIONE:
+        allowed = {VehicleClass.CIVILIAN.value}
     else:
-        return  # UG / Evacuazione: gestite in F4/F5
+        return
 
     if vclass not in allowed:
         raise LaunchError(
@@ -112,12 +133,12 @@ def launch_mission(
     vehicle_id: int,
     fighter_ids: list[int],
     current_day: int,
+    chain_legs: list[dict] | None = None,
 ) -> dict:
-    """Lancia una missione: valida il loadout, calcola ETA, mette in volo.
+    """Lancia una missione (singola o catena multi-tappa §9.11).
 
-    - Per Intercettazione (TERRESTRE / LUNARE): il vettore deve avere un pilota assegnato.
-    - Per Sbarco (TERRESTRE / LUNARE): il vettore da missione trasporta i combattenti.
-    - L'ETA è 2 × distanza_km / (velocità × MACH_KMH / 24h).
+    chain_legs = [{"mission_id": int, "fighter_ids": list[int]}, ...]
+    Massimo CHAIN_MAX_LEGS - 1 tappe aggiuntive oltre alla prima.
     """
     mission = _get_mission(agency, mission_id, db)
     _check_mission_state(mission)
@@ -129,9 +150,10 @@ def launch_mission(
     _require_vehicle_type(mtype, vehicle)
 
     is_intercept = mtype in (MissionType.INTERCETTAZIONE_TERRESTRE,
-                              MissionType.INTERCETTAZIONE_LUNARE)
+                             MissionType.INTERCETTAZIONE_LUNARE)
+    is_evacuazione = mtype == MissionType.EVACUAZIONE
 
-    # per le intercettazioni serve un pilota con licenza adeguata
+    # intercettazione: pilota obbligatorio
     pilot: Pilot | None = None
     if is_intercept:
         if not vehicle.pilot_id:
@@ -140,28 +162,78 @@ def launch_mission(
         if not pilot or pilot.status in ("eliminated", "training"):
             raise LaunchError("pilota non disponibile")
 
-    # per sbarco serve almeno 1 combattente
+    # sbarco: almeno 1 combattente (non per evacuazione)
     fighters: list[Fighter] = []
-    if not is_intercept:
+    if not is_intercept and not is_evacuazione:
         if not fighter_ids:
             raise LaunchError("sbarco richiede almeno 1 combattente")
         fighters = _get_fighters(agency, fighter_ids)
         _check_fighters_state(fighters, vehicle)
 
-    # calcola ETA (§8)
+    # calcola tappe aggiuntive (chain)
+    chain_legs = chain_legs or []
+    if len(chain_legs) >= B.CHAIN_MAX_LEGS:
+        raise LaunchError(f"catena troppo lunga: max {B.CHAIN_MAX_LEGS} tappe totali")
+
+    chain_missions: list[Mission] = []
+    chain_fighters_per_leg: list[list[Fighter]] = []
+    for leg in chain_legs:
+        cm = _get_mission(agency, leg["mission_id"], db)
+        _check_mission_state(cm)
+        leg_mtype = MissionType(cm.mission_type)
+        _require_vehicle_type(leg_mtype, vehicle)
+        chain_missions.append(cm)
+        if not leg_mtype in (MissionType.INTERCETTAZIONE_TERRESTRE,
+                              MissionType.INTERCETTAZIONE_LUNARE,
+                              MissionType.EVACUAZIONE):
+            leg_fids = leg.get("fighter_ids", [])
+            if not leg_fids:
+                raise LaunchError(f"tappa {cm.id}: sbarco richiede combattenti")
+            leg_fighters = _get_fighters(agency, leg_fids)
+            _check_fighters_state(leg_fighters, vehicle)
+            chain_fighters_per_leg.append(leg_fighters)
+        else:
+            chain_fighters_per_leg.append([])
+
+    # calcola ETA
     bp = get_vehicle(vehicle.project)
-    distanza = _haversine_km(
-        agency.base_lat, agency.base_lon,
-        mission.target_lat, mission.target_lon,
-    )
-    eta_days = _eta_days(distanza, bp.velocita)
+    is_space = _is_space_mission(mtype)
+
+    if chain_missions:
+        all_missions = [mission] + chain_missions
+        waypoints = (
+            [(agency.base_lat, agency.base_lon)]
+            + [(m.target_lat, m.target_lon) for m in all_missions]
+            + [(agency.base_lat, agency.base_lon)]
+        )
+        eta_days = _eta_chain_days(waypoints, bp.velocita)
+    else:
+        distanza = _haversine_km(
+            agency.base_lat, agency.base_lon,
+            mission.target_lat, mission.target_lon,
+        )
+        eta_days = _eta_days(distanza, bp.velocita)
+
+    # overhead lunare (§8.5)
+    if is_space:
+        eta_days += B.LUNAR_TRANSIT_DAYS
+
     return_day = current_day + eta_days
 
-    # aggiorna stato
+    # aggiorna stato prima missione
     mission.status = MissionStatus.IN_PROGRESS.value
     mission.vehicle_id = vehicle_id
     mission.fighters_json = fighter_ids
     mission.sortie_return_day = return_day
+    mission.chain_leg = 0
+
+    # aggiorna tappe aggiuntive
+    for leg_idx, (cm, leg_fighters) in enumerate(zip(chain_missions, chain_fighters_per_leg)):
+        cm.status = MissionStatus.IN_PROGRESS.value
+        cm.vehicle_id = vehicle_id
+        cm.fighters_json = [f.id for f in leg_fighters]
+        cm.sortie_return_day = return_day
+        cm.chain_leg = leg_idx + 1
 
     vehicle.status = "in_flight"
     vehicle.return_day = return_day
@@ -170,6 +242,9 @@ def launch_mission(
         pilot.status = "in_flight"
     for f in fighters:
         f.status = "in_flight"
+    for leg_fighters in chain_fighters_per_leg:
+        for f in leg_fighters:
+            f.status = "in_flight"
 
     db.flush()
 
@@ -178,8 +253,9 @@ def launch_mission(
         "vehicle_id": vehicle_id,
         "pilot_id": vehicle.pilot_id,
         "fighters": fighter_ids,
-        "distanza_km": round(distanza, 1),
+        "chain_legs": len(chain_missions),
         "eta_days": round(eta_days, 2),
         "return_day": round(return_day, 2),
         "mtype": mtype.value,
+        "is_space": is_space,
     }

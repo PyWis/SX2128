@@ -38,16 +38,21 @@ def _is_air(vclass: str) -> bool:
 
 
 def compute_espo(agency: Agency) -> float:
-    """ESPO/giorno generato dagli aerei da esplorazione in volo (§8.1) + perk cultura."""
+    """ESPO/giorno da aerei da esplorazione in hangar con pilota (§8.1) + perk cultura."""
     culture = get_culture(agency.culture)
     pilots = {p.id: p for p in agency.pilots}
     total = 0.0
     for v in agency.vehicles:
-        if v.vclass != VehicleClass.EXPLORATION.value or v.status != "in_flight":
+        if v.vclass != VehicleClass.EXPLORATION.value:
+            continue
+        # §8.1: genera ESPO se stazionato (barracks) con pilota operativo assegnato
+        if v.status != "barracks" or not v.pilot_id:
+            continue
+        pilot = pilots.get(v.pilot_id)
+        if not pilot or pilot.status in ("eliminated", "in_flight", "training"):
             continue
         bp = get_vehicle(v.project)
-        espo_pct = pilots[v.pilot_id].espo_pct if v.pilot_id in pilots else 0.0
-        total += bp.espo_giorno * (1 + espo_pct / 100.0)
+        total += bp.espo_giorno * (1 + (pilot.espo_pct or 0.0) / 100.0)
     if "espo_x4" in culture.perks:
         total *= 4
     elif "espo_x2" in culture.perks:

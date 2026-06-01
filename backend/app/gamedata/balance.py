@@ -57,3 +57,14 @@ UG_COFINANCE_PER_MISSION = 100
 SPEED_STANDARD = 1
 SPEED_CAMPIONI = 4
 CAMPIONI_CYCLE_DAYS = 10
+
+# --- §8.5 Trasferimento Terra-Luna ---
+LUNAR_TRANSIT_DAYS = 6   # overhead round-trip Terra↔Luna (3g andata + 3g ritorno)
+
+# --- §9.9 Evacuazione civili ---
+K_CIVILI_EVACUAZIONE = 100     # civili_da_salvare = int(E(t) * K)
+EVACUAZIONE_TARIFF = 1.0       # R per civile salvato
+REF_CAPACITA_H_EVAC = 10_000   # riferimento per reward_estimate
+
+# --- §9.11 Sortie multi-missione ---
+CHAIN_MAX_LEGS = 4  # massimo tappe per sortie

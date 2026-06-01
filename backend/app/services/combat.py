@@ -1,19 +1,15 @@
-"""Risoluzione combattimento — GDD §9.5-9.7.
-
-Calcola Pg in base al tipo di missione, risolve il combattimento e
-applica le conseguenze (danni, premi, perdite strutturali) ai modelli.
-"""
+"""Risoluzione combattimento — GDD §9.5-9.7, §9.9, §9.11."""
 from __future__ import annotations
 
 import random
 
-from app.gamedata.enums import AlarmLevel, MissionType, VehicleClass
+from app.gamedata import balance as B
+from app.gamedata.enums import AlarmLevel, MissionType
 from app.gamedata.equipment import EQUIPMENT, MISSILES
 from app.gamedata.vehicles import get_vehicle
 from app.models.core import Agency, Fighter, Mission, Pilot, Vehicle
 from app.services import formulas as F
 
-# consumo equipaggiamento al rientro (§6)
 EQUIP_CONSUME_PROB = 0.30
 
 
@@ -42,7 +38,6 @@ def _tabi_efficace(fighter: Fighter, is_space: bool) -> int:
 
 
 def _sum_missiles(vehicle: Vehicle, is_space: bool) -> int:
-    """Somma potenza missili del vettore (terra STR o spazio STRS)."""
     total = 0
     if not is_space and vehicle.missiles_terra_key and vehicle.missiles_terra_key in MISSILES:
         total += MISSILES[vehicle.missiles_terra_key].str_terra * vehicle.missiles_terra_count
@@ -55,7 +50,6 @@ def _calc_pg(
     mission: Mission, vehicle: Vehicle, pilot: Pilot | None,
     fighters: list[Fighter],
 ) -> float:
-    """Calcola Pg in base al tipo di missione."""
     mtype = MissionType(mission.mission_type)
     is_space = mtype in (MissionType.INTERCETTAZIONE_LUNARE, MissionType.LUNARE)
 
@@ -65,13 +59,11 @@ def _calc_pg(
         str_pct = (pilot.strs_pct if is_space else pilot.str_pct) if pilot else 0.0
         return F.pg_intercettazione(bp.attacco, missili, str_pct, bp.velocita)
 
-    # sbarco (Terrestre / Lunare)
     tabi_list = [_tabi_efficace(f, is_space) for f in fighters]
     return F.pg_sbarco(tabi_list)
 
 
 def _consume_equipment(fighter: Fighter, rng: random.Random) -> list[str]:
-    """§6 — 30% di probabilità di perdere ogni pezzo di equipaggiamento."""
     consumed = []
     for slot in ("weapon_key", "armor_terra_key", "armor_spazio_key"):
         if getattr(fighter, slot) is not None:
@@ -81,6 +73,39 @@ def _consume_equipment(fighter: Fighter, rng: random.Random) -> list[str]:
     return consumed
 
 
+def _resolve_evacuazione(
+    mission: Mission, vehicle: Vehicle, agency: Agency, rng: random.Random,
+    *, is_final_leg: bool = True,
+) -> dict:
+    """§9.9 — evacuazione civili: nessun combattimento, solo capacità di trasporto."""
+    bp = get_vehicle(vehicle.project)
+    civili_richiesti = mission.civili_da_salvare or 0
+    civili_salvati = min(bp.capacita_h, civili_richiesti)
+    ricompensa = round(civili_salvati * B.EVACUAZIONE_TARIFF, 1)
+    agency.balance += ricompensa
+    agency.missions_completed += 1
+    if not agency.first_mission_done:
+        agency.first_mission_done = True
+        agency.ug_grace_active = False
+    if is_final_leg:
+        vehicle.status = "barracks"
+        vehicle.return_day = None
+    return {
+        "mission_id": mission.id,
+        "mission_type": MissionType.EVACUAZIONE.value,
+        "alarm": mission.alarm,
+        "pg": 0, "pn": 0, "pg_eff": 0, "pn_eff": 0,
+        "success": True,
+        "overwhelming": False,
+        "ricompensa": ricompensa,
+        "losses": [],
+        "consumed_equip": [],
+        "vehicle_lost": False,
+        "pilot_lost": False,
+        "civili_salvati": civili_salvati,
+    }
+
+
 def resolve_mission(
     mission: Mission,
     vehicle: Vehicle,
@@ -88,29 +113,25 @@ def resolve_mission(
     fighters: list[Fighter],
     agency: Agency,
     rng: random.Random,
+    *,
+    is_final_leg: bool = True,
 ) -> dict:
     """Risolve il combattimento, applica le conseguenze, ritorna il log.
 
-    Effetti applicati:
-    - Saldo agency += ricompensa (se successo)
-    - missions_completed += 1 (se successo)
-    - first_mission_done = True (se era la prima)
-    - ug_grace_active = False (dopo la prima missione)
-    - Danni ai combattenti: VIT ridotto; se VIT<=0 → eliminato
-    - Intercettazione: su sconfitta vettore + pilota eliminati
-    - Equipaggiamento: 30% consumo per combattente al rientro
-    - Missili vettore: azzerati al rientro
-    - Unità: status → barracks
+    is_final_leg=False: usato nelle sortie multi-missione (§9.11); sospende il
+    rientro del vettore, il consumo equip e il reset missili fino all'ultima tappa.
     """
     mtype = MissionType(mission.mission_type)
+
+    if mtype == MissionType.EVACUAZIONE:
+        return _resolve_evacuazione(mission, vehicle, agency, rng, is_final_leg=is_final_leg)
+
     alarm = AlarmLevel(mission.alarm)
     is_intercept = mtype in (MissionType.INTERCETTAZIONE_TERRESTRE,
                              MissionType.INTERCETTAZIONE_LUNARE)
 
     pg = _calc_pg(mission, vehicle, pilot, fighters)
     result = F.resolve_combat(pg, mission.pn, rng)
-
-    # ricompensa (§9.7) — calcolata su Pn reale della missione
     ricompensa = F.reward(mission.pn, mtype, alarm) if result.success else 0.0
 
     log: dict = {
@@ -130,7 +151,6 @@ def resolve_mission(
         "pilot_lost": False,
     }
 
-    # applica conseguenze
     if result.success:
         agency.balance += ricompensa
         agency.missions_completed += 1
@@ -139,19 +159,21 @@ def resolve_mission(
             agency.ug_grace_active = False
 
     if is_intercept and not result.success:
-        # §9.6: distruzione vettore + morte pilota su sconfitta
         vehicle.status = "eliminated"
         log["vehicle_lost"] = True
         if pilot:
             pilot.status = "eliminated"
             log["pilot_lost"] = True
             log["losses"].append({"type": "pilot", "name": pilot.name})
-    elif is_intercept:
-        # vettore torna in hangar, pilota libero
+    elif is_intercept and result.success and is_final_leg:
         vehicle.status = "barracks"
         vehicle.return_day = None
+        if pilot:
+            pilot.status = "barracks"
+    elif is_intercept and result.success and not is_final_leg:
+        if pilot:
+            pilot.status = "barracks"   # pilota libero dopo ogni successo
 
-    # sbarco: danni ai combattenti
     if not is_intercept and fighters:
         dif_list = [max(1, f.dif) for f in fighters]
         danni = F.ripartisci_danno(result.danno_totale, dif_list)
@@ -161,26 +183,21 @@ def resolve_mission(
                 f.status = "eliminated"
                 log["losses"].append({"type": "fighter", "name": f.name, "vit": 0})
             else:
-                f.status = "barracks"
+                if is_final_leg:
+                    f.status = "barracks"
                 log["losses"].append({"type": "fighter_vit", "name": f.name, "vit": f.vit,
                                       "damage": round(danno, 1)})
-            # consumo equipaggiamento (§6)
-            consumed = _consume_equipment(f, rng)
-            if consumed:
-                log["consumed_equip"].append({"fighter": f.name, "slots": consumed})
+            if is_final_leg:
+                consumed = _consume_equipment(f, rng)
+                if consumed:
+                    log["consumed_equip"].append({"fighter": f.name, "slots": consumed})
             f.missions_completed += 1
-    elif is_intercept and result.success:
-        # pilota aggiorna conteggio missioni
-        if pilot:
-            pilot.status = "barracks"
 
-    # sbarco: vettore torna in hangar (non eliminato nelle missioni terrestri/lunari)
-    if not is_intercept:
+    if not is_intercept and is_final_leg:
         vehicle.status = "barracks"
         vehicle.return_day = None
 
-    # missili vettore azzerati al rientro (§6.2)
-    if vehicle.status != "eliminated":
+    if is_final_leg and vehicle.status != "eliminated":
         vehicle.missiles_terra_count = 0
         vehicle.missiles_terra_key = None
         vehicle.missiles_spazio_count = 0

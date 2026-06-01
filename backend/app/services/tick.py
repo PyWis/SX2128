@@ -19,7 +19,7 @@ from app.gamedata.buildings import (
     FIGHTER_LIMITS, FIGHTER_VIT_MAX, FIGHTER_VIT_REGEN,
     HOSPITAL_HEAL_BASE, VIT_MAX_HEAL,
 )
-from app.gamedata.enums import MissionStatus
+from app.gamedata.enums import AlarmLevel, MissionStatus
 from app.models.core import Agency, Mission, Server
 from app.services import economy
 from app.services.missions import assign_daily_missions
@@ -34,27 +34,22 @@ def _is_active(agency: Agency, now) -> bool:
 
 
 def _process_training(agency: Agency, day: int, rng: random.Random) -> None:
-    """Completa addestramenti piloti e combattenti al giorno corrente."""
-    # §4.2/§4.3 — piloti: training_info = "lic:<type>:<tier>" o "stat:<stat>"
     for p in agency.pilots:
         if p.status == "training" and p.training_until_day is not None:
             if day >= p.training_until_day:
                 info = p.training_info or ""
                 if info.startswith("stat:"):
-                    # addestramento stat pilota: +1%
-                    stat = info[5:]  # "espo", "str" o "strs"
+                    stat = info[5:]
                     attr = f"{stat}_pct"
                     current = getattr(p, attr, 0.0)
                     setattr(p, attr, round(min(25.0, current + 1.0), 1))
                 elif info.startswith("lic:"):
-                    # addestramento licenza: assegna la licenza
                     _, lic_type, lic_tier = info.split(":")
                     p.licenses = {**p.licenses, lic_type: lic_tier}
                 p.status = "barracks"
                 p.training_until_day = None
                 p.training_info = None
 
-    # §4.4 — combattenti
     stat_map = {"STR": "strg", "DIF": "dif", "MOV": "mov", "SPA": "spa"}
     for f in agency.fighters:
         if f.training_until_day is not None and day >= f.training_until_day:
@@ -70,18 +65,17 @@ def _process_training(agency: Agency, day: int, rng: random.Random) -> None:
 
 
 def _process_hospital(agency: Agency, rng: random.Random) -> None:
-    """§5.2 — guarigione giornaliera in ospedale: VIT += 20 ± 5, max 100."""
     for f in agency.fighters:
         if f.status != "hospital":
             continue
         heal = HOSPITAL_HEAL_BASE + rng.randint(-5, 5)
         f.vit = min(VIT_MAX_HEAL, f.vit + heal)
         if f.vit >= VIT_MAX_HEAL:
-            f.status = "barracks"  # dimissione automatica a piena salute
+            f.status = "barracks"
 
 
 def _resolve_sorties(db: Session, agency: Agency, day: int, rng: random.Random) -> list[dict]:
-    """§9 — risolve le sortie il cui return_day <= giorno corrente."""
+    """§9 / §9.11 — risolve sortie il cui return_day <= giorno corrente, gestisce catene."""
     from app.services.combat import resolve_mission
 
     logs = []
@@ -91,25 +85,93 @@ def _resolve_sorties(db: Session, agency: Agency, day: int, rng: random.Random) 
         Mission.sortie_return_day <= day,
     ).all()
 
-    for mission in in_progress:
-        # recupera vettore e unità
-        vehicle = next((v for v in agency.vehicles if v.id == mission.vehicle_id), None)
+    # raggruppa per vehicle_id (ogni vettore ha al più una catena attiva)
+    by_vehicle: dict[int, list[Mission]] = {}
+    for m in in_progress:
+        if m.vehicle_id not in by_vehicle:
+            by_vehicle[m.vehicle_id] = []
+        by_vehicle[m.vehicle_id].append(m)
+
+    for vehicle_id, missions in by_vehicle.items():
+        missions.sort(key=lambda m: m.chain_leg)
+        vehicle = next((v for v in agency.vehicles if v.id == vehicle_id), None)
         if not vehicle:
-            mission.status = MissionStatus.FAILED.value
+            for m in missions:
+                m.status = MissionStatus.FAILED.value
             continue
 
         pilot = next((p for p in agency.pilots if p.id == vehicle.pilot_id), None)
-        fighter_ids = mission.fighters_json or []
-        fighters = [f for f in agency.fighters if f.id in fighter_ids]
+        chain_aborted = False
 
-        log = resolve_mission(mission, vehicle, pilot, fighters, agency, rng)
-        mission.status = (
-            MissionStatus.COMPLETED.value if log["success"]
-            else MissionStatus.FAILED.value
-        )
-        mission.resolution_json = log
-        logs.append(log)
+        for i, mission in enumerate(missions):
+            if chain_aborted:
+                mission.status = MissionStatus.FAILED.value
+                continue
+
+            is_final = (i == len(missions) - 1)
+            fighter_ids = mission.fighters_json or []
+            fighters = [f for f in agency.fighters if f.id in fighter_ids]
+
+            log = resolve_mission(
+                mission, vehicle, pilot, fighters, agency, rng,
+                is_final_leg=is_final,
+            )
+            mission.status = (MissionStatus.COMPLETED.value if log["success"]
+                              else MissionStatus.FAILED.value)
+            mission.resolution_json = log
+            logs.append(log)
+
+            if log.get("vehicle_lost"):
+                chain_aborted = True
+
+        # se la catena è completata e il vettore non è eliminato, ritorna in hangar
+        if not chain_aborted and vehicle.status == "in_flight":
+            vehicle.status = "barracks"
+            vehicle.return_day = None
+            if pilot and pilot.status == "in_flight":
+                pilot.status = "barracks"
+
     return logs
+
+
+def _escalate_alarms(db: Session, server_id: int, day: int) -> int:
+    """§9.2 — Verde→Giallo→Rosso→FAILED per missioni non eseguite."""
+    resolved = 0
+
+    # Verde → Giallo quando la scadenza Verde è passata
+    verde = db.query(Mission).filter(
+        Mission.server_id == server_id,
+        Mission.status == MissionStatus.ASSIGNED.value,
+        Mission.alarm == AlarmLevel.VERDE.value,
+        Mission.deadline_day <= day,
+    ).all()
+    for m in verde:
+        m.alarm = AlarmLevel.GIALLO.value
+        m.deadline_day = m.assigned_day + B.ALARM_ROSSO_DAY   # scadenza al giorno 12
+
+    # Giallo → Rosso
+    giallo = db.query(Mission).filter(
+        Mission.server_id == server_id,
+        Mission.status == MissionStatus.ASSIGNED.value,
+        Mission.alarm == AlarmLevel.GIALLO.value,
+        Mission.deadline_day <= day,
+    ).all()
+    for m in giallo:
+        m.alarm = AlarmLevel.ROSSO.value
+        m.deadline_day = m.assigned_day + B.ALARM_ROSSO_DAY + 2  # UG risolve dopo 48h
+
+    # Rosso → UG risolve (FAILED)
+    rosso = db.query(Mission).filter(
+        Mission.server_id == server_id,
+        Mission.status == MissionStatus.ASSIGNED.value,
+        Mission.alarm == AlarmLevel.ROSSO.value,
+        Mission.deadline_day <= day,
+    ).all()
+    for m in rosso:
+        m.status = MissionStatus.FAILED.value
+        resolved += 1
+
+    return resolved
 
 
 def run_tick(db: Session, server: Server, rng: random.Random | None = None) -> dict:
@@ -126,16 +188,14 @@ def run_tick(db: Session, server: Server, rng: random.Random | None = None) -> d
     for agency in agencies:
         if agency.cut_by_ug:
             continue
-        # §9.1 inattivita: oltre 48h l'agenzia e rimossa
         agency.active = _is_active(agency, now)
         if not agency.active:
             summary["agencies"].append({"id": agency.id, "status": "inattiva"})
             continue
 
-        # fedelta lineare cresce di 1 giorno (§1)
         agency.loyalty_days += 1
 
-        # §4.4 — +1 VIT/g gratis in caserma (max 120)
+        # §4.4 — +1 VIT/g in caserma
         for f in agency.fighters:
             if f.status == "barracks" and f.vit < FIGHTER_VIT_MAX:
                 f.vit = min(FIGHTER_VIT_MAX, f.vit + FIGHTER_VIT_REGEN)
@@ -146,14 +206,13 @@ def run_tick(db: Session, server: Server, rng: random.Random | None = None) -> d
         # §4.2/§4.3/§4.4 — completamento addestramenti
         _process_training(agency, day, rng)
 
-        # §9 — risoluzione sortie rientrate
+        # §9 / §9.11 — risoluzione sortie rientrate
         sortie_logs = _resolve_sorties(db, agency, day, rng)
 
-        # economia del giorno (missioni completate nelle ultime 48h per co-finanziamento)
+        # economia del giorno
         missioni_48h = len([s for s in sortie_logs if s.get("success")])
         ledger = economy.apply_daily(db, agency, missioni_48h=missioni_48h)
 
-        # reset flag reclutamento giornaliero
         agency.recruited_today = False
 
         summary["agencies"].append({
@@ -163,9 +222,13 @@ def run_tick(db: Session, server: Server, rng: random.Random | None = None) -> d
             "sortie_risolte": len(sortie_logs),
         })
 
-    # assegnazione missioni del nuovo giorno (§9.1)
+    # §9.2 — escalation allarmi per tutto il server
+    ug_resolved = _escalate_alarms(db, server.id, day)
+
+    # §9.1 — assegnazione missioni del nuovo giorno
     assigned = assign_daily_missions(db, server, day)
     summary["missioni_assegnate"] = assigned
+    summary["ug_resolved"] = ug_resolved
 
     db.flush()
     return summary

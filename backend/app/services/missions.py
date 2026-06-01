@@ -14,6 +14,7 @@ from app.services import formulas as F
 UNLOCK_DAY = {
     MissionType.TERRESTRE: 0,                  # 1 luglio
     MissionType.INTERCETTAZIONE_TERRESTRE: 45, # 15 agosto
+    MissionType.EVACUAZIONE: 50,               # inizio agosto
     MissionType.INTERCETTAZIONE_LUNARE: 92,    # 1 ottobre
     MissionType.LUNARE: 123,                   # 1 novembre
 }
@@ -28,6 +29,30 @@ def _unlocked_types(day: int) -> list[MissionType]:
 
 def _make_mission(db: Session, server: Server, agency: Agency | None,
                   mtype: MissionType, day: int, rng: random.Random) -> Mission:
+    if mtype == MissionType.EVACUAZIONE:
+        from app.services.formulas import enemy_index
+        et = enemy_index(day)
+        civili = int(et * B.K_CIVILI_EVACUAZIONE)
+        tariff = B.EVACUAZIONE_TARIFF
+        reward = min(B.REF_CAPACITA_H_EVAC, civili) * tariff
+        m = Mission(
+            server_id=server.id,
+            agency_id=agency.id if agency else None,
+            mission_type=mtype.value,
+            alarm=AlarmLevel.VERDE.value,
+            status=MissionStatus.ASSIGNED.value,
+            target_lat=rng.uniform(-60, 70),
+            target_lon=rng.uniform(-180, 180),
+            pn=0.0,                             # no combat
+            reward_estimate=round(reward, 1),
+            assigned_day=day,
+            deadline_day=day + B.ALARM_VERDE_DAYS,
+            visible_at_hour=rng.randint(0, 23),
+            civili_da_salvare=civili,
+        )
+        db.add(m)
+        return m
+
     n = _REF_SQUAD if mtype in (MissionType.TERRESTRE, MissionType.LUNARE) else 1
     pn = F.enemy_power(mtype, day, n_combattenti=n)
     reward = F.reward(pn, mtype, AlarmLevel.VERDE)
@@ -40,7 +65,7 @@ def _make_mission(db: Session, server: Server, agency: Agency | None,
         target_lat=rng.uniform(-60, 70),
         target_lon=rng.uniform(-180, 180),
         pn=pn,
-        reward_estimate=reward,
+        reward_estimate=round(reward, 1),
         assigned_day=day,
         deadline_day=day + B.ALARM_VERDE_DAYS,
         visible_at_hour=rng.randint(0, 23),

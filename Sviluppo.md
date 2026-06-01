@@ -106,7 +106,8 @@ Lo scaffold full-stack è avviato in [`backend/`](backend/) (Python · FastAPI �
   controllo licenze (§8); equipaggiamento combattenti 3 slot (§6.1); carica missili su vettori da caccia
   (§6.2); completamento addestramenti nel tick; SPA vanilla con tabs. Test: 49 verdi (`backend/tests/`).
 - **F3 — Vettori & Missioni base (Terrestri)**: ✅ acquisto vettori con sconti culturali; assegnazione pilota↔vettore con controllo licenze; calcolo ETA haversine andata+ritorno (§8); lancio missione con validazione tipo vettore/stato/pilota/combattenti (§9.10); risoluzione combattimento nel tick: Pg sbarco (ΣTABI+equip) e intercettazione (attacco+missili×stat%), fattore casuale ±25%, danni VIT ripartiti per DIF, eliminazione vettore+pilota, consumo equip 30%, reset missili (§9.5–9.7); premi accreditati all'agenzia; simulatore Pg vs Pn ±25% + stima probabilità (§9.10); tab Missioni frontend con plancia, dialog lancio+simula, in-volo ETA, storico combat log. Test: 62 verdi (`backend/tests/`).
-- **F4–F7**: da implementare (le caselle sotto restano la traccia di lavoro).
+- **F4 — Teatri completi**: ✅ escalation allarmi Verde→Giallo→Rosso→UG_risolve nel tick (§9.2); ESPO giornaliero da aeroplani da esplorazione stazionati con pilota (§8.1); missioni EVACUAZIONE civili con spazioplani civili, ricompensa = min(capacita_H, civili) × tariffa (§9.9); overhead lunare fisso ±6gg round-trip per missioni spaziali (§8.5); sortie multi-missione a catena (max 4 tappe), ETA cumulativo haversine waypoint-to-waypoint, consumo equip/missili solo sull'ultima tappa, chain interrotta su sconfitta intercettazione (§9.11); sblocco tipi missione per giorno di server (§9.3); frontend: badge allarme colorati, info evacuazione, dialog lancio con selezione catena. Test: 76 verdi (`backend/tests/`).
+- **F5–F7**: da implementare (le caselle sotto restano la traccia di lavoro).
 
 ---
 

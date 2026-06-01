@@ -15,9 +15,15 @@ from app.services.launch_service import LaunchError, launch_mission
 router = APIRouter(prefix="/api/agency", tags=["missions"])
 
 
+class ChainLeg(BaseModel):
+    mission_id: int
+    fighter_ids: list[int] = []
+
+
 class LaunchRequest(BaseModel):
     vehicle_id: int
-    fighter_ids: list[int] = []   # per missioni di sbarco
+    fighter_ids: list[int] = []        # per la prima missione (sbarco)
+    chain_legs: list[ChainLeg] = []    # tappe aggiuntive (§9.11)
 
 
 # --- helpers ---
@@ -37,8 +43,6 @@ def _server_day(db: Session, server_id: int) -> int:
 
 
 def _mission_out(m: Mission) -> dict:
-    # stima Pg per simulatore (§9.10)
-    pg_info = None
     return {
         "id": m.id,
         "mission_type": m.mission_type,
@@ -53,6 +57,8 @@ def _mission_out(m: Mission) -> dict:
         "vehicle_id": m.vehicle_id,
         "fighters": m.fighters_json or [],
         "sortie_return_day": m.sortie_return_day,
+        "chain_leg": m.chain_leg,
+        "civili_da_salvare": m.civili_da_salvare,
         "resolution": m.resolution_json,
     }
 
@@ -104,10 +110,13 @@ def api_launch_mission(
 ) -> dict:
     agency = _get_agency(db, user, server_id)
     day = _server_day(db, server_id)
+    chain = [{"mission_id": l.mission_id, "fighter_ids": l.fighter_ids}
+             for l in payload.chain_legs]
     try:
         result = launch_mission(
             db, agency, mission_id,
             payload.vehicle_id, payload.fighter_ids, day,
+            chain_legs=chain,
         )
     except LaunchError as e:
         raise HTTPException(400, str(e))

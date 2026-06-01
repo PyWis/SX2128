@@ -215,6 +215,12 @@ class Mission(Base):
     sortie_return_day: Mapped[float | None] = mapped_column(Float, nullable=True)  # ETA
     resolution_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # log combattimento
 
+    # §9.11 F4 — sortie multi-missione (catena di tappe)
+    chain_leg: Mapped[int] = mapped_column(Integer, default=0)  # 0 = solo o prima tappa
+
+    # §9.9 F4 — evacuazione civili
+    civili_da_salvare: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
 
 class Alliance(Base):
     """§12."""
