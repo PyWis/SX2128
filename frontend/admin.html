@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SX2128 · Dashboard Superadmin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Rajdhani:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="app/app.css" />
+<style>
+  .topbar .brand span.admin-tag {
+    font-size: 11px; color: var(--magenta); margin-left: 10px;
+    border: 1px solid var(--magenta); padding: 2px 7px; border-radius: 999px;
+    font-family: Rajdhani; letter-spacing: 1px; vertical-align: middle;
+  }
+  #loginBox { max-width: 380px; margin: 60px auto; }
+  .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px,1fr)); gap: 10px; margin-bottom: 20px; }
+  .action-bar { display: flex; gap: 8px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
+  .action-bar input { width: 240px; }
+  tr.banned td { opacity: .55; }
+  tr.superadmin-row td:first-child::before { content: "★ "; color: var(--magenta); }
+  .badge { display:inline-block;padding:2px 7px;border-radius:999px;font-size:11px;font-family:'JetBrains Mono'; }
+  .badge.ok { background:rgba(39,230,164,.15); color:var(--ok); border:1px solid var(--ok); }
+  .badge.bad { background:rgba(255,77,109,.15); color:var(--bad); border:1px solid var(--bad); }
+  .badge.muted { background:rgba(125,139,181,.1); color:var(--muted); border:1px solid var(--line); }
+  .section-title { font-family:Orbitron; font-size:13px; letter-spacing:.5px; margin:0 0 12px;
+    display:flex; align-items:center; gap:10px; }
+  .section-title small { font-family:Rajdhani; font-size:12px; color:var(--muted); font-weight:400; letter-spacing:0; }
+  #toast { position:fixed; bottom:22px; right:22px; padding:10px 18px; border-radius:10px;
+    font-family:'JetBrains Mono'; font-size:13px; opacity:0; transition:opacity .2s;
+    background:var(--panel2); border:1px solid var(--line); color:var(--txt); z-index:999; }
+  #toast.show { opacity:1; }
+  .wrap-admin { max-width: 1200px; margin: 26px auto; padding: 0 18px; display: flex; flex-direction: column; gap: 20px; }
+</style>
+</head>
+<body>
+<div class="bg"></div>
+
+<header class="topbar">
+  <div class="brand">SX<span>2128</span><span class="admin-tag">SUPERADMIN</span></div>
+  <div class="api" style="display:flex;gap:12px;align-items:center">
+    API <input id="apiBase" value="http://localhost:8000" style="width:180px" />
+    <span id="adminEmail" class="muted"></span>
+    <button class="ghost sm" id="btnLogout" style="display:none" onclick="logout()">Logout</button>
+  </div>
+</header>
+
+<!-- ── LOGIN ─────────────────────────────────────────────────────────────── -->
+<div id="loginBox" class="card">
+  <h2 style="font-family:Orbitron">Accesso Superadmin</h2>
+  <label>Email</label>
+  <input id="loginEmail" value="delpyadmin@sx2128.local" />
+  <label>Password</label>
+  <input id="loginPwd" type="password" placeholder="password generata all'avvio" />
+  <div style="margin-top:12px">
+    <button onclick="doLogin()">Accedi</button>
+  </div>
+  <div id="loginErr" class="err"></div>
+</div>
+
+<!-- ── DASHBOARD ─────────────────────────────────────────────────────────── -->
+<div id="dashboard" class="wrap-admin hidden">
+
+  <!-- Statistiche globali -->
+  <div class="card">
+    <div class="section-title">Statistiche Globali <small id="statsTs"></small></div>
+    <div class="stat-row" id="statsRow"></div>
+  </div>
+
+  <!-- Tabs -->
+  <div>
+    <div class="tabs">
+      <button class="tab active" onclick="showTab('users')">Utenti</button>
+      <button class="tab" onclick="showTab('servers')">Server</button>
+    </div>
+
+    <!-- Tab Utenti -->
+    <div id="tab-users" class="card">
+      <div class="action-bar">
+        <input id="searchInput" placeholder="Cerca per email…" oninput="searchUsers()" />
+        <button class="ghost sm" onclick="loadUsers()">↺ Ricarica</button>
+      </div>
+      <table id="usersTable">
+        <thead>
+          <tr>
+            <th>ID</th><th>Email</th><th>Agenzie</th><th>Missioni</th>
+            <th>Stato</th><th>Registrato</th><th>Azioni</th>
+          </tr>
+        </thead>
+        <tbody id="usersBody"></tbody>
+      </table>
+      <div id="usersErr" class="err"></div>
+    </div>
+
+    <!-- Tab Server -->
+    <div id="tab-servers" class="card hidden">
+      <div class="action-bar">
+        <button class="ghost sm" onclick="loadServers()">↺ Ricarica</button>
+      </div>
+      <table id="serversTable">
+        <thead>
+          <tr>
+            <th>ID</th><th>Nome</th><th>Tipo</th><th>Giorno</th><th>Ciclo</th>
+            <th>Agenzie</th><th>Stato</th><th>Avviato</th><th>Azioni</th>
+          </tr>
+        </thead>
+        <tbody id="serversBody"></tbody>
+      </table>
+      <div id="serversErr" class="err"></div>
+    </div>
+  </div>
+
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ── state ──────────────────────────────────────────────────────────────────
+let token = localStorage.getItem("sx_admin_token") || "";
+let _searchTimer = null;
+
+function api() { return document.getElementById("apiBase").value.replace(/\/$/, ""); }
+
+function headers() {
+  return { "Content-Type": "application/json", "Authorization": `Bearer ${token}` };
+}
+
+// ── toast ──────────────────────────────────────────────────────────────────
+function toast(msg, ok = true) {
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.style.borderColor = ok ? "var(--ok)" : "var(--bad)";
+  el.style.color = ok ? "var(--ok)" : "var(--bad)";
+  el.classList.add("show");
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.remove("show"), 3000);
+}
+
+// ── auth ───────────────────────────────────────────────────────────────────
+async function doLogin() {
+  const email = document.getElementById("loginEmail").value.trim();
+  const pwd   = document.getElementById("loginPwd").value;
+  const form  = new URLSearchParams({ username: email, password: pwd });
+  try {
+    const r = await fetch(`${api()}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: form,
+    });
+    if (!r.ok) { document.getElementById("loginErr").textContent = (await r.json()).detail; return; }
+    const data = await r.json();
+    token = data.access_token;
+    localStorage.setItem("sx_admin_token", token);
+    document.getElementById("loginErr").textContent = "";
+    await enterDashboard(email);
+  } catch(e) {
+    document.getElementById("loginErr").textContent = "Errore di rete: " + e.message;
+  }
+}
+
+async function enterDashboard(email) {
+  document.getElementById("loginBox").classList.add("hidden");
+  document.getElementById("dashboard").classList.remove("hidden");
+  document.getElementById("adminEmail").textContent = email || "superadmin";
+  document.getElementById("btnLogout").style.display = "";
+  await Promise.all([loadStats(), loadUsers()]);
+}
+
+function logout() {
+  token = "";
+  localStorage.removeItem("sx_admin_token");
+  document.getElementById("dashboard").classList.add("hidden");
+  document.getElementById("loginBox").classList.remove("hidden");
+  document.getElementById("btnLogout").style.display = "none";
+  document.getElementById("adminEmail").textContent = "";
+}
+
+// ── tabs ───────────────────────────────────────────────────────────────────
+function showTab(name) {
+  document.querySelectorAll(".tab").forEach((t, i) => {
+    const names = ["users", "servers"];
+    t.classList.toggle("active", names[i] === name);
+  });
+  document.getElementById("tab-users").classList.toggle("hidden", name !== "users");
+  document.getElementById("tab-servers").classList.toggle("hidden", name !== "servers");
+  if (name === "servers") loadServers();
+}
+
+// ── stats ──────────────────────────────────────────────────────────────────
+async function loadStats() {
+  try {
+    const r = await fetch(`${api()}/api/superadmin/stats`, { headers: headers() });
+    if (!r.ok) return;
+    const d = await r.json();
+    document.getElementById("statsTs").textContent = "· aggiornato " + new Date().toLocaleTimeString("it");
+    document.getElementById("statsRow").innerHTML = [
+      stat("Utenti", d.total_users),
+      stat("Bannati", d.banned_users, d.banned_users > 0 ? "bad" : "ok"),
+      stat("Server attivi", d.active_servers, "ok"),
+      stat("Server totali", d.total_servers),
+      stat("Agenzie", d.total_agencies),
+      stat("Revenue €", "€ " + d.revenue_eur.toFixed(2), "ok"),
+      stat("Agenda 2030 €", "€ " + d.agenda_2030_eur.toFixed(2)),
+    ].join("");
+  } catch {}
+}
+
+function stat(k, v, cls = "") {
+  const color = cls === "ok" ? "var(--ok)" : cls === "bad" ? "var(--bad)" : "var(--txt)";
+  return `<div class="stat">
+    <div class="k">${k}</div>
+    <div class="v" style="color:${color}">${v}</div>
+  </div>`;
+}
+
+// ── users ──────────────────────────────────────────────────────────────────
+async function loadUsers(search = "") {
+  document.getElementById("usersErr").textContent = "";
+  try {
+    const url = `${api()}/api/superadmin/users?limit=200` + (search ? `&search=${encodeURIComponent(search)}` : "");
+    const r = await fetch(url, { headers: headers() });
+    if (!r.ok) { document.getElementById("usersErr").textContent = (await r.json()).detail; return; }
+    renderUsers(await r.json());
+  } catch(e) {
+    document.getElementById("usersErr").textContent = "Errore: " + e.message;
+  }
+}
+
+function searchUsers() {
+  clearTimeout(_searchTimer);
+  _searchTimer = setTimeout(() => {
+    loadUsers(document.getElementById("searchInput").value.trim());
+  }, 300);
+}
+
+function renderUsers(users) {
+  const tbody = document.getElementById("usersBody");
+  tbody.innerHTML = users.map(u => {
+    const stBadge = u.is_banned
+      ? `<span class="badge bad">bannato</span>`
+      : u.is_superadmin
+        ? `<span class="badge" style="color:var(--magenta);border-color:var(--magenta);background:rgba(224,64,251,.1)">superadmin</span>`
+        : `<span class="badge ok">attivo</span>`;
+    const banBtn = u.is_superadmin ? "" : u.is_banned
+      ? `<button class="sm ok" onclick="unbanUser(${u.id})">Riabilita</button>`
+      : `<button class="sm warn" onclick="banUser(${u.id})">Banna</button>`;
+    const delBtn = u.is_superadmin ? "" : `<button class="sm bad" onclick="deleteUser(${u.id}, '${u.email}')">Elimina</button>`;
+    const date = u.created_at.replace("T", " ").slice(0, 16);
+    return `<tr class="${u.is_banned ? "banned" : ""}${u.is_superadmin ? " superadmin-row" : ""}">
+      <td><code>${u.id}</code></td>
+      <td>${u.email}</td>
+      <td>${u.agency_count}</td>
+      <td>${u.missions_completed}</td>
+      <td>${stBadge}</td>
+      <td class="muted">${date}</td>
+      <td><div class="btns">${banBtn}${delBtn}</div></td>
+    </tr>`;
+  }).join("");
+}
+
+async function banUser(id) {
+  if (!confirm("Bannare questo utente?")) return;
+  try {
+    const r = await fetch(`${api()}/api/superadmin/users/${id}/ban`, { method: "POST", headers: headers() });
+    if (!r.ok) { toast((await r.json()).detail, false); return; }
+    toast("Utente bannato"); loadUsers(); loadStats();
+  } catch(e) { toast(e.message, false); }
+}
+
+async function unbanUser(id) {
+  try {
+    const r = await fetch(`${api()}/api/superadmin/users/${id}/unban`, { method: "POST", headers: headers() });
+    if (!r.ok) { toast((await r.json()).detail, false); return; }
+    toast("Utente riabilitato"); loadUsers(); loadStats();
+  } catch(e) { toast(e.message, false); }
+}
+
+async function deleteUser(id, email) {
+  if (!confirm(`Eliminare definitivamente l'utente "${email}" e tutte le sue agenzie?`)) return;
+  try {
+    const r = await fetch(`${api()}/api/superadmin/users/${id}`, { method: "DELETE", headers: headers() });
+    if (!r.ok) { toast((await r.json()).detail, false); return; }
+    toast("Utente eliminato"); loadUsers(); loadStats();
+  } catch(e) { toast(e.message, false); }
+}
+
+// ── servers ────────────────────────────────────────────────────────────────
+async function loadServers() {
+  document.getElementById("serversErr").textContent = "";
+  try {
+    const r = await fetch(`${api()}/api/superadmin/servers`, { headers: headers() });
+    if (!r.ok) { document.getElementById("serversErr").textContent = (await r.json()).detail; return; }
+    renderServers(await r.json());
+  } catch(e) {
+    document.getElementById("serversErr").textContent = "Errore: " + e.message;
+  }
+}
+
+function renderServers(servers) {
+  const tbody = document.getElementById("serversBody");
+  tbody.innerHTML = servers.map(s => {
+    const stBadge = s.finished
+      ? `<span class="badge muted">terminato</span>`
+      : `<span class="badge ok">attivo</span>`;
+    const typeLabel = { f2p: "F2P", campioni: "Campioni", pro: "Pro" }[s.server_type] || s.server_type;
+    const date = s.started_at.replace("T", " ").slice(0, 10);
+    const delBtn = `<button class="sm bad" onclick="deleteServer(${s.id}, '${s.name}')">Elimina</button>`;
+    return `<tr>
+      <td><code>${s.id}</code></td>
+      <td>${s.name}</td>
+      <td>${typeLabel} ×${s.speed}</td>
+      <td>${s.current_day}</td>
+      <td>${s.cycle}</td>
+      <td>${s.agency_count} / ${s.capacity}</td>
+      <td>${stBadge}</td>
+      <td class="muted">${date}</td>
+      <td>${delBtn}</td>
+    </tr>`;
+  }).join("");
+}
+
+async function deleteServer(id, name) {
+  if (!confirm(`Eliminare il server "${name}"?\nL'operazione è irreversibile.`)) return;
+  try {
+    const r = await fetch(`${api()}/api/superadmin/servers/${id}`, { method: "DELETE", headers: headers() });
+    const data = await r.json();
+    if (!r.ok) { toast(data.detail, false); return; }
+    toast("Server eliminato"); loadServers(); loadStats();
+  } catch(e) { toast(e.message, false); }
+}
+
+// ── auto-login se token salvato ────────────────────────────────────────────
+(async () => {
+  if (!token) return;
+  try {
+    const r = await fetch(`${api()}/api/superadmin/stats`, { headers: headers() });
+    if (r.ok) {
+      const email = localStorage.getItem("sx_admin_email") || "delpyadmin";
+      await enterDashboard(email);
+    } else {
+      token = "";
+      localStorage.removeItem("sx_admin_token");
+    }
+  } catch {}
+})();
+</script>
+</body>
+</html>

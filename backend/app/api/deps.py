@@ -20,4 +20,12 @@ def get_current_user(token: str = Depends(oauth2_scheme),
     user = db.query(User).filter(User.id == int(sub)).first()
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="utente inesistente")
+    if user.is_banned:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="account bannato")
+    return user
+
+
+def get_superadmin(user: User = Depends(get_current_user)) -> User:
+    if not user.is_superadmin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="accesso riservato al superadmin")
     return user

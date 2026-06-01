@@ -29,4 +29,6 @@ def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get
     user = db.query(User).filter(User.email == form.username).first()
     if not user or not verify_password(form.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="credenziali non valide")
+    if user.is_banned:
+        raise HTTPException(status_code=403, detail="account bannato")
     return Token(access_token=create_access_token(str(user.id)))

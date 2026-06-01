@@ -7,15 +7,17 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import (
-    admin, agency, alliances_api, auth, buildings, catalog,
+    admin, admin_dashboard, agency, alliances_api, auth, buildings, catalog,
     chat_api, classifica_api, missions_api, personnel, shop_api, vehicles_api,
 )
 from app.database import init_db
+from app.services.superadmin import ensure_superadmin
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    ensure_superadmin()
     yield
 
 
@@ -51,3 +53,4 @@ app.include_router(alliances_api.router)
 app.include_router(chat_api.router)
 app.include_router(classifica_api.router)
 app.include_router(shop_api.router)
+app.include_router(admin_dashboard.router)
