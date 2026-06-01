@@ -17,7 +17,13 @@ UNLOCK_DAY = {
     MissionType.EVACUAZIONE: 50,               # inizio agosto
     MissionType.INTERCETTAZIONE_LUNARE: 92,    # 1 ottobre
     MissionType.LUNARE: 123,                   # 1 novembre
+    MissionType.UG: 30,                        # missioni UG dal giorno 30
 }
+
+# §9.8 — una missione UG ogni N giorni
+UG_MISSION_INTERVAL = 5
+# moltiplicatore Pn per missioni UG
+UG_PN_MULT = 3.0
 
 # dimensione squadra di riferimento per stimare Pn degli sbarchi
 _REF_SQUAD = 8
@@ -74,6 +80,29 @@ def _make_mission(db: Session, server: Server, agency: Agency | None,
     return m
 
 
+def _make_ug_mission(db: Session, server: Server, day: int, rng: random.Random) -> Mission:
+    """§9.8 — missione UG ad alto rischio/ricompensa, visibile a tutti."""
+    n = _REF_SQUAD
+    pn = F.enemy_power(MissionType.TERRESTRE, day, n_combattenti=n) * UG_PN_MULT
+    reward = F.reward(pn, MissionType.TERRESTRE, AlarmLevel.VERDE) * 2.0  # ricompensa doppia
+    m = Mission(
+        server_id=server.id,
+        agency_id=None,
+        mission_type=MissionType.UG.value,
+        alarm=AlarmLevel.VERDE.value,
+        status=MissionStatus.AVAILABLE.value,   # subito visibile a tutti
+        target_lat=rng.uniform(-60, 70),
+        target_lon=rng.uniform(-180, 180),
+        pn=pn,
+        reward_estimate=round(reward, 1),
+        assigned_day=day,
+        deadline_day=day + B.ALARM_VERDE_DAYS,
+        visible_at_hour=0,
+    )
+    db.add(m)
+    return m
+
+
 def assign_daily_missions(db: Session, server: Server, day: int,
                           rng: random.Random | None = None) -> int:
     """§9.1: distribuisce le missioni del giorno alle agenzie attive in base all'ESPO."""
@@ -84,8 +113,9 @@ def assign_daily_missions(db: Session, server: Server, day: int,
     if not active:
         return 0
 
-    types = _unlocked_types(day)
-    if not types:
+    # §9.3 filtra UG dai tipi normali (generata separatamente)
+    regular_types = [t for t in _unlocked_types(day) if t != MissionType.UG]
+    if not regular_types:
         return 0
 
     disponibili = F.missioni_disponibili(len(active))
@@ -95,8 +125,14 @@ def assign_daily_missions(db: Session, server: Server, day: int,
     for agency in active:
         n = F.missioni_giocatore(disponibili, agency.espo_today, espo_tot)
         for _ in range(n):
-            mtype = rng.choice(types)
+            mtype = rng.choice(regular_types)
             _make_mission(db, server, agency, mtype, day, rng)
             created += 1
+
+    # §9.8 missione UG ogni UG_MISSION_INTERVAL giorni a partire dal day 30
+    if day >= UNLOCK_DAY[MissionType.UG] and day % UG_MISSION_INTERVAL == 0:
+        _make_ug_mission(db, server, day, rng)
+        created += 1
+
     db.flush()
     return created

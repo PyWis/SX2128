@@ -55,12 +55,33 @@ def _is_space_mission(mtype: MissionType) -> bool:
 
 
 def _get_mission(agency: Agency, mission_id: int, db: Session) -> Mission:
+    # missione propria
     m = db.query(Mission).filter(
         Mission.id == mission_id, Mission.agency_id == agency.id
     ).first()
-    if not m:
-        raise LaunchError("missione non trovata o non assegnata all'agenzia")
-    return m
+    if m:
+        return m
+    # §12 pool alleanza (agency_id = NULL, alliance_id corrisponde)
+    if agency.alliance_id:
+        m = db.query(Mission).filter(
+            Mission.id == mission_id,
+            Mission.agency_id.is_(None),
+            Mission.alliance_id == agency.alliance_id,
+        ).first()
+        if m:
+            m.agency_id = agency.id   # claim: assegna all'agenzia risolutrice
+            return m
+    # §9.8 missioni UG disponibili a tutti
+    m = db.query(Mission).filter(
+        Mission.id == mission_id,
+        Mission.agency_id.is_(None),
+        Mission.alliance_id.is_(None),
+        Mission.status == "available",
+    ).first()
+    if m:
+        m.agency_id = agency.id
+        return m
+    raise LaunchError("missione non trovata o non assegnata all'agenzia")
 
 
 def _get_vehicle(agency: Agency, vehicle_id: int) -> Vehicle:

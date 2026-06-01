@@ -121,6 +121,18 @@ def _resolve_sorties(db: Session, agency: Agency, day: int, rng: random.Random) 
             mission.resolution_json = log
             logs.append(log)
 
+            # §12 split ricompensa missione trasferita (25% solver / 75% transferente)
+            if log["success"] and mission.transferred_from_agency_id:
+                full = log.get("ricompensa", 0.0)
+                solver_share = round(full * B.TRANSFER_SOLVER_SHARE, 2)
+                transferer_share = round(full - solver_share, 2)
+                agency.balance -= (full - solver_share)   # corregge a 25%
+                transferer = db.get(Agency, mission.transferred_from_agency_id)
+                if transferer:
+                    transferer.balance += transferer_share
+                log["solver_share"] = solver_share
+                log["transferer_share"] = transferer_share
+
             if log.get("vehicle_lost"):
                 chain_aborted = True
 
@@ -229,6 +241,21 @@ def run_tick(db: Session, server: Server, rng: random.Random | None = None) -> d
     assigned = assign_daily_missions(db, server, day)
     summary["missioni_assegnate"] = assigned
     summary["ug_resolved"] = ug_resolved
+
+    # §11 — Taglio UG al termine di ogni ciclo di 40 giorni
+    taglio_result = None
+    if day > 0 and day % B.CYCLE_DAYS == 0:
+        from app.services.taglio_service import run_ciclo_taglio
+        taglio_result = run_ciclo_taglio(db, server, day, rng)
+        summary["taglio"] = taglio_result
+
+        # Notifica Delpy
+        from app.services.chat_service import post_delpy
+        n_tagliati = len(taglio_result.get("tagliati", []))
+        post_delpy(db, server.id,
+                   f"[Sistema] Ciclo {server.cycle - 1} concluso. "
+                   f"Taglio UG: {n_tagliati} agenzie eliminate. "
+                   f"Superstiti: {taglio_result.get('survivors', '?')}.")
 
     db.flush()
     return summary

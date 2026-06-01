@@ -1,5 +1,5 @@
 /* SX2128 — Console Agenzia (SPA vanilla)
-   F3: Missioni, Lanci, Combattimento */
+   F5: Classifica, Alleanze, Chat, Ciclo 40gg */
 
 const S = {
   token: localStorage.getItem("sx_token") || null,
@@ -9,7 +9,10 @@ const S = {
   recruit_opts: {},
   log: [],
   tab: "overview",
-  data: { ag: null, pilots: [], fighters: [], vehicles: [], missions: [] },
+  data: {
+    ag: null, pilots: [], fighters: [], vehicles: [], missions: [],
+    classifica: [], alliance: null, chat_delpy: [], chat_ugnet: [],
+  },
   _launchMid: null,
   _launchIsIntercept: false,
 };
@@ -344,7 +347,7 @@ function _mtypeLabel(t) {
   return {
     terrestre: "Terrestre", lunare: "Lunare",
     intercept_terra: "Intercett. Terra", intercept_luna: "Intercett. Luna",
-    evacuazione: "Evacuazione",
+    evacuazione: "Evacuazione", ug: "UG ★",
   }[t] || t;
 }
 
@@ -368,6 +371,7 @@ function renderMissions(missions, vehicles, fighters) {
     inflightByVehicle[key].push(m);
   });
 
+  const hasAlliance = !!S.data.ag?.alliance_id;
   const assignedRows = assigned.map(m => `
     <tr>
       <td>${_alarmBadge(m.alarm)}<br><small>${_mtypeLabel(m.mission_type)}</small></td>
@@ -376,8 +380,11 @@ function renderMissions(missions, vehicles, fighters) {
       <td>~${m.reward_estimate} R</td>
       <td>gg ${m.deadline_day}</td>
       <td>
-        <button class="sm" onclick="launchDialog(${m.id},'${m.mission_type}')">Lancia</button>
-        ${m.chain_leg > 0 ? `<br><small class="muted">Tappa ${m.chain_leg}</small>` : ""}
+        <div class="btns">
+          <button class="sm" onclick="launchDialog(${m.id},'${m.mission_type}')">Lancia</button>
+          ${hasAlliance && m.alarm === "verde" ? `<button class="sm ghost" onclick="doTransferMission(${m.id})">→Alleanza</button>` : ""}
+        </div>
+        ${m.chain_leg > 0 ? `<small class="muted">Tappa ${m.chain_leg}</small>` : ""}
       </td>
     </tr>`).join("");
 
@@ -454,8 +461,149 @@ function renderMissions(missions, vehicles, fighters) {
   </div>`;
 }
 
+/* ── F5: Classifica ── */
+function renderClassifica(classifica, myAgencyId) {
+  if (!classifica.length) return '<section class="card"><h2>Classifica</h2><p class="muted">Nessun dato — avanza il tick.</p></section>';
+  const rows = classifica.map(r => {
+    const isMe = r.agency_id === myAgencyId;
+    const al = r.alliance_id ? `<span class="pill">#${r.alliance_id}</span>` : "";
+    const active = r.active ? "" : '<span class="pill bad">inattivo</span>';
+    return `<tr${isMe ? ' style="background:var(--surface2)"' : ''}>
+      <td><b>#${r.rank}</b></td>
+      <td>${r.name}${isMe ? ' <span class="pill ok">tu</span>' : ""}${active}</td>
+      <td><span class="pill">${r.culture}</span></td>
+      <td><b>${r.missions_completed}</b></td>
+      <td>${Math.round(r.espo_total)}</td>
+      <td>${Math.round(r.balance)} R</td>
+      <td>${al}${r.alliance_role ? `<small class="muted">${r.alliance_role}</small>` : ""}</td>
+    </tr>`;
+  }).join("");
+  return `
+  <section class="card">
+    <h2>Classifica §11</h2>
+    <table>
+      <thead><tr><th>Pos.</th><th>Agenzia</th><th>Cultura</th><th>Missioni</th><th>ESPO tot.</th><th>Saldo</th><th>Alleanza</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </section>`;
+}
+
+/* ── F5: Alleanze ── */
+function renderAlleanze(ag, alliance, alliances) {
+  const isInAlliance = !!ag.alliance_id;
+  const isCap = ag.alliance_role === "capo";
+
+  let alDetail = "";
+  if (isInAlliance && alliance) {
+    const membRows = (alliance.members || []).map(m => `
+      <tr>
+        <td>${m.name}</td>
+        <td><span class="pill${m.role==="capo"?" ok":""}">${m.role}</span></td>
+        <td>${m.missions_completed}</td>
+      </tr>`).join("");
+    alDetail = `
+    <section class="card">
+      <h2>${alliance.name} <span class="muted" style="font-size:12px">id #${alliance.id}</span></h2>
+      <div class="grid" style="margin-bottom:12px">
+        ${stat("Tesoreria", Math.round(alliance.treasury) + " R")}
+        ${stat("Membri", (alliance.members||[]).length + " / 28")}
+        ${stat("Ruolo tuo", ag.alliance_role)}
+      </div>
+      <table>
+        <thead><tr><th>Membro</th><th>Ruolo</th><th>Missioni</th></tr></thead>
+        <tbody>${membRows}</tbody>
+      </table>
+      <div class="row" style="margin-top:12px;flex-wrap:wrap;gap:8px">
+        ${isCap ? `
+          <input id="alDepositAmt" type="number" value="100" style="width:90px"/>
+          <button class="sm" onclick="doAllianceDeposit()">Deposita in tesoreria</button>
+          <button class="sm ghost" onclick="doAllianceWithdraw()">Preleva</button>
+        ` : `
+          <input id="alDepositAmt" type="number" value="100" style="width:90px"/>
+          <button class="sm" onclick="doAllianceDeposit()">Deposita in tesoreria</button>
+        `}
+        <button class="sm bad" onclick="doLeaveAlliance()">Lascia alleanza</button>
+      </div>
+      <div id="al-err" class="err"></div>
+    </section>`;
+  } else {
+    const otherList = (alliances||[]).filter(a => !isInAlliance).map(a =>
+      `<tr><td>${a.name}</td><td>${(a.members||[]).length}/28</td>
+       <td><button class="sm" onclick="doJoinAlliance(${a.id})">Entra</button></td></tr>`
+    ).join("");
+    alDetail = `
+    <section class="card">
+      <h2>Crea Alleanza</h2>
+      <div class="row">
+        <input id="alName" placeholder="Nome alleanza" style="flex:2"/>
+        <button onclick="doCreateAlliance()">Crea</button>
+      </div>
+      <div id="al-err" class="err"></div>
+    </section>
+    ${otherList ? `
+    <section class="card">
+      <h2>Alleanze disponibili</h2>
+      <table>
+        <thead><tr><th>Nome</th><th>Membri</th><th></th></tr></thead>
+        <tbody>${otherList}</tbody>
+      </table>
+    </section>` : ""}`;
+  }
+  return alDetail;
+}
+
+/* ── F5: Chat ── */
+function renderChat(ag, chat_delpy, chat_ugnet) {
+  const delpyMsgs = (chat_delpy||[]).map(m =>
+    `<div style="padding:4px 0;border-bottom:1px solid var(--border)">
+      <small class="muted">${new Date(m.created_at).toLocaleTimeString()}</small>
+      <span class="pill warn">Delpy</span>
+      <span>${m.body}</span>
+    </div>`).join("") || '<p class="muted">Nessun messaggio di sistema.</p>';
+
+  const ugMsgs = (chat_ugnet||[]).map(m =>
+    `<div style="padding:4px 0;border-bottom:1px solid var(--border)">
+      <small class="muted">${new Date(m.created_at).toLocaleTimeString()}</small>
+      <span class="pill">${m.author_agency_id ? "Agenzia #"+m.author_agency_id : "Sistema"}</span>
+      <span>${m.body}</span>
+    </div>`).join("") || '<p class="muted">Nessun messaggio.</p>';
+
+  const alKey = ag.alliance_id ? String(ag.alliance_id) : null;
+
+  return `
+  <section class="card">
+    <h2>Canale Delpy (sistema)</h2>
+    <div style="max-height:200px;overflow-y:auto;padding:8px;background:var(--surface2);border-radius:6px">
+      ${delpyMsgs}
+    </div>
+  </section>
+  <section class="card">
+    <h2>UG-Net (globale)</h2>
+    <div style="max-height:200px;overflow-y:auto;padding:8px;background:var(--surface2);border-radius:6px;margin-bottom:10px">
+      ${ugMsgs}
+    </div>
+    <div class="row">
+      <input id="ugMsg" placeholder="Messaggio a UG-Net..." style="flex:3"/>
+      <button onclick="doSendChat('ug_net','global')">Invia</button>
+    </div>
+    <div id="chat-err" class="err"></div>
+  </section>
+  ${ag.alliance_id ? `
+  <section class="card">
+    <h2>Canale Alleanza (privato)</h2>
+    <div id="al-chat-feed" style="max-height:200px;overflow-y:auto;padding:8px;background:var(--surface2);border-radius:6px;margin-bottom:10px">
+      <p class="muted">Caricamento...</p>
+    </div>
+    <div class="row">
+      <input id="alMsg" placeholder="Messaggio alleanza..." style="flex:3"/>
+      <button onclick="doSendChat('alleanza','${alKey}')">Invia</button>
+    </div>
+  </section>` : ""}`;
+}
+
 /* ── main dashboard builder ── */
 function viewDashboard(ag, pilots, fighters, vehicles, missions) {
+  const { classifica, alliance, chat_delpy, chat_ugnet } = S.data;
   const tabs = [
     { id: "overview", label: "Panoramica" },
     { id: "buildings", label: "Edifici" },
@@ -463,6 +611,9 @@ function viewDashboard(ag, pilots, fighters, vehicles, missions) {
     { id: "fighters", label: `Combattenti (${fighters.length})` },
     { id: "vehicles", label: `Vettori (${vehicles.length})` },
     { id: "missions", label: `Missioni (${missions.filter(m=>m.status==="assigned").length})` },
+    { id: "classifica", label: "Classifica" },
+    { id: "alleanze", label: ag.alliance_id ? "Alleanza ✦" : "Alleanze" },
+    { id: "chat", label: "Chat" },
   ];
   const tabBar = tabs.map(t =>
     `<button class="tab${S.tab===t.id?" active":""}" onclick="switchTab('${t.id}')">${t.label}</button>`
@@ -475,11 +626,29 @@ function viewDashboard(ag, pilots, fighters, vehicles, missions) {
   else if (S.tab === "fighters") content = renderFighters(fighters);
   else if (S.tab === "vehicles") content = renderVehicles(vehicles, pilots);
   else if (S.tab === "missions") content = renderMissions(missions, vehicles, fighters);
+  else if (S.tab === "classifica") content = renderClassifica(classifica, ag.id);
+  else if (S.tab === "alleanze") content = renderAlleanze(ag, alliance, classifica);
+  else if (S.tab === "chat") content = renderChat(ag, chat_delpy, chat_ugnet);
 
   app().innerHTML = `
   <div class="tabs">${tabBar}</div>
   ${content}
   <section class="card"><h2>Log · Delpy</h2><div id="log" class="log">${S.log.join("\n")}</div></section>`;
+
+  // carica messaggi alleanza se nel tab chat
+  if (S.tab === "chat" && ag.alliance_id) {
+    req(`/api/chat/${S.serverId}/messages/alleanza/${ag.alliance_id}`)
+      .then(msgs => {
+        const el = document.getElementById("al-chat-feed");
+        if (!el) return;
+        el.innerHTML = msgs.length
+          ? msgs.map(m => `<div style="padding:4px 0;border-bottom:1px solid var(--border)">
+              <small class="muted">${new Date(m.created_at).toLocaleTimeString()}</small>
+              <span class="pill">${m.author_agency_id ? "Agenzia #"+m.author_agency_id : "Sistema"}</span>
+              <span>${m.body}</span></div>`).join("")
+          : '<p class="muted">Nessun messaggio nell\'alleanza.</p>';
+      }).catch(() => {});
+  }
 }
 
 function switchTab(tab) {
@@ -501,7 +670,11 @@ async function doRecruit() {
 async function doTick() {
   try {
     const d = await req(`/api/admin/server/${S.serverId}/tick`, { method: "POST" });
-    logLine(`tick → giorno ${d.day} · missioni assegnate: ${d.missioni_assegnate}`);
+    let msg = `tick → giorno ${d.day} · missioni: ${d.missioni_assegnate}`;
+    if (d.taglio) {
+      msg += ` · TAGLIO ciclo ${d.taglio.cycle-1}: ${d.taglio.tagliati.length} eliminati`;
+    }
+    logLine(msg);
     await refreshData();
   } catch (e) { logLine("tick err: " + e.message); }
 }
@@ -831,15 +1004,128 @@ function closeLDialog() { $("launch-dialog").style.display = "none"; }
 /* ────────────────────────── Data refresh ────────────────────────── */
 async function refreshData() {
   const sid = S.serverId;
-  const [ag, pilots, fighters, vehicles, missions] = await Promise.all([
+  const [ag, pilots, fighters, vehicles, missions, classifica, chat_delpy, chat_ugnet] = await Promise.all([
     req(`/api/agency/${sid}`),
     req(`/api/agency/${sid}/pilots`).catch(() => []),
     req(`/api/agency/${sid}/fighters`).catch(() => []),
     req(`/api/agency/${sid}/vehicles`).catch(() => []),
     req(`/api/agency/${sid}/missions`).catch(() => []),
+    req(`/api/classifica/${sid}`).catch(() => []),
+    req(`/api/chat/${sid}/messages/delpy/sistema`).catch(() => []),
+    req(`/api/chat/${sid}/messages/ug_net/global`).catch(() => []),
   ]);
-  S.data = { ag, pilots, fighters, vehicles, missions };
+  let alliance = null;
+  if (ag.alliance_id) {
+    alliance = await req(`/api/alliances/${ag.alliance_id}/detail?server_id=${sid}`).catch(() => null);
+    if (!alliance) {
+      // fallback: recupera dalla lista
+      const list = await req(`/api/alliances/${sid}`).catch(() => []);
+      alliance = list.find(a => a.id === ag.alliance_id) || null;
+    }
+  }
+  S.data = { ag, pilots, fighters, vehicles, missions, classifica, alliance, chat_delpy, chat_ugnet };
   viewDashboard(ag, pilots, fighters, vehicles, missions);
+}
+
+/* ────────────────────────── F5: Alliance actions ────────────────────────── */
+async function doCreateAlliance() {
+  const errEl = $("al-err");
+  if (errEl) errEl.textContent = "";
+  try {
+    const name = $("alName")?.value?.trim();
+    if (!name) throw new Error("inserisci un nome");
+    const d = await req("/api/alliances", { method: "POST", body: { server_id: Number(S.serverId), name } });
+    logLine(`alleanza "${d.name}" creata (id #${d.id})`);
+    await refreshData();
+  } catch (e) {
+    const el = $("al-err");
+    if (el) el.textContent = e.message;
+    else logLine("err alleanza: " + e.message);
+  }
+}
+
+async function doJoinAlliance(allianceId) {
+  try {
+    const d = await req(`/api/alliances/${allianceId}/join?server_id=${S.serverId}`, { method: "POST" });
+    logLine(`entrato nell'alleanza "${d.name}"`);
+    await refreshData();
+  } catch (e) { logLine("err join alleanza: " + e.message); }
+}
+
+async function doLeaveAlliance() {
+  if (!confirm("Sei sicuro di voler lasciare l'alleanza?")) return;
+  try {
+    const alId = S.data.ag.alliance_id;
+    await req(`/api/alliances/${alId}/leave?server_id=${S.serverId}`, { method: "DELETE" });
+    logLine("hai lasciato l'alleanza");
+    await refreshData();
+  } catch (e) { logLine("err leave alleanza: " + e.message); }
+}
+
+async function doAllianceDeposit() {
+  const errEl = $("al-err");
+  if (errEl) errEl.textContent = "";
+  try {
+    const amount = Number($("alDepositAmt")?.value || 0);
+    const alId = S.data.ag.alliance_id;
+    const d = await req(`/api/alliances/${alId}/treasury/deposit?server_id=${S.serverId}`, {
+      method: "POST", body: { amount }
+    });
+    logLine(`depositati ${amount} R in tesoreria · tesoreria: ${d.treasury} R`);
+    await refreshData();
+  } catch (e) {
+    const el = $("al-err");
+    if (el) el.textContent = e.message;
+  }
+}
+
+async function doAllianceWithdraw() {
+  const errEl = $("al-err");
+  if (errEl) errEl.textContent = "";
+  try {
+    const amount = Number($("alDepositAmt")?.value || 0);
+    const alId = S.data.ag.alliance_id;
+    const d = await req(`/api/alliances/${alId}/treasury/withdraw?server_id=${S.serverId}`, {
+      method: "POST", body: { amount }
+    });
+    logLine(`prelevati ${amount} R dalla tesoreria · tesoreria: ${d.treasury} R`);
+    await refreshData();
+  } catch (e) {
+    const el = $("al-err");
+    if (el) el.textContent = e.message;
+  }
+}
+
+async function doTransferMission(missionId) {
+  try {
+    const alId = S.data.ag.alliance_id;
+    if (!alId) throw new Error("non sei in un'alleanza");
+    await req(`/api/alliances/${alId}/transfer-mission?server_id=${S.serverId}`, {
+      method: "POST", body: { mission_id: missionId }
+    });
+    logLine(`missione #${missionId} trasferita al pool alleanza`);
+    await refreshData();
+  } catch (e) { logLine("err trasferimento: " + e.message); }
+}
+
+/* ────────────────────────── F5: Chat actions ────────────────────────── */
+async function doSendChat(channelType, channelKey) {
+  const errEl = $("chat-err");
+  if (errEl) errEl.textContent = "";
+  const inputId = channelType === "ug_net" ? "ugMsg" : "alMsg";
+  const body = $(inputId)?.value?.trim();
+  if (!body) return;
+  try {
+    await req(`/api/chat/${S.serverId}/messages`, {
+      method: "POST", body: { channel_type: channelType, channel_key: channelKey, body }
+    });
+    $(inputId).value = "";
+    logLine(`messaggio inviato su ${channelType}`);
+    await refreshData();
+  } catch (e) {
+    const el = $("chat-err");
+    if (el) el.textContent = e.message;
+  }
 }
 
 /* ────────────────────────── Boot ────────────────────────── */

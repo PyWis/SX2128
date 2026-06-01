@@ -221,6 +221,10 @@ class Mission(Base):
     # §9.9 F4 — evacuazione civili
     civili_da_salvare: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # §12 F5 — pool missioni alleanza e split ricompensa trasferimento
+    alliance_id: Mapped[int | None] = mapped_column(ForeignKey("alliances.id"), nullable=True)
+    transferred_from_agency_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
 
 class Alliance(Base):
     """§12."""
