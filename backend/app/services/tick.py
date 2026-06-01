@@ -74,7 +74,8 @@ def _process_hospital(agency: Agency, rng: random.Random) -> None:
             f.status = "barracks"
 
 
-def _resolve_sorties(db: Session, agency: Agency, day: int, rng: random.Random) -> list[dict]:
+def _resolve_sorties(db: Session, agency: Agency, day: int, rng: random.Random,
+                     server=None) -> list[dict]:
     """§9 / §9.11 — risolve sortie il cui return_day <= giorno corrente, gestisce catene."""
     from app.services.combat import resolve_mission
 
@@ -142,6 +143,18 @@ def _resolve_sorties(db: Session, agency: Agency, day: int, rng: random.Random) 
             vehicle.return_day = None
             if pilot and pilot.status == "in_flight":
                 pilot.status = "barracks"
+
+    # §5.20 Delpy: notifica rientro sortie completate
+    if logs and server is not None:
+        from app.services.chat_service import post_delpy as _pd
+        n_ok = sum(1 for l in logs if l.get("success"))
+        n_fail = len(logs) - n_ok
+        msg = f"[Delpy] Agenzia {agency.name}: {len(logs)} sortie rientrate"
+        if n_ok:
+            msg += f", {n_ok} completate con successo"
+        if n_fail:
+            msg += f", {n_fail} fallite"
+        _pd(db, server.id, msg + ".")
 
     return logs
 
@@ -219,11 +232,18 @@ def run_tick(db: Session, server: Server, rng: random.Random | None = None) -> d
         _process_training(agency, day, rng)
 
         # §9 / §9.11 — risoluzione sortie rientrate
-        sortie_logs = _resolve_sorties(db, agency, day, rng)
+        sortie_logs = _resolve_sorties(db, agency, day, rng, server=server)
 
         # economia del giorno
         missioni_48h = len([s for s in sortie_logs if s.get("success")])
         ledger = economy.apply_daily(db, agency, missioni_48h=missioni_48h)
+
+        # §5.20 Delpy: avviso saldo negativo
+        if agency.balance < 0:
+            from app.services.chat_service import post_delpy as _pd
+            _pd(db, server.id,
+                f"[Delpy] Agenzia {agency.name}: saldo in rosso "
+                f"({round(agency.balance, 0)} R). Rischio default imminente.")
 
         agency.recruited_today = False
 
@@ -242,15 +262,38 @@ def run_tick(db: Session, server: Server, rng: random.Random | None = None) -> d
     summary["missioni_assegnate"] = assigned
     summary["ug_resolved"] = ug_resolved
 
-    # §11 — Taglio UG al termine di ogni ciclo di 40 giorni
+    # §5.20 Delpy: sblocco nuovi tipi di missione
+    from app.services.chat_service import post_delpy
+    from app.services.missions import UNLOCK_DAY
+    from app.gamedata.enums import MissionType as MT
+    _UNLOCK_LABELS = {
+        MT.INTERCETTAZIONE_TERRESTRE: "Intercettazione Aerea",
+        MT.EVACUAZIONE: "Evacuazione Civili",
+        MT.INTERCETTAZIONE_LUNARE: "Intercettazione Lunare",
+        MT.LUNARE: "Sbarco Lunare",
+        MT.UG: "Missioni UG",
+    }
+    for mtype, unlock_day in UNLOCK_DAY.items():
+        if day == unlock_day and mtype in _UNLOCK_LABELS:
+            post_delpy(db, server.id,
+                       f"[Delpy] Nuovi teatri sbloccati: {_UNLOCK_LABELS[mtype]}. "
+                       f"Le minacce si espandono, generali.")
+
+    # §5.20 Delpy: avviso pre-Taglio (5 giorni prima del ciclo)
+    cycle_days = B.CAMPIONI_CYCLE_DAYS if server.speed == B.SPEED_CAMPIONI else B.CYCLE_DAYS
+    days_to_taglio = cycle_days - (day % cycle_days)
+    if days_to_taglio == 5:
+        post_delpy(db, server.id,
+                   f"[Delpy] Attenzione: mancano 5 giorni al Taglio UG. "
+                   f"Consolidate le vostre posizioni, generali.")
+
+    # §11 — Taglio UG al termine di ogni ciclo (CYCLE_DAYS o CAMPIONI_CYCLE_DAYS)
     taglio_result = None
-    if day > 0 and day % B.CYCLE_DAYS == 0:
+    if day > 0 and day % cycle_days == 0:
         from app.services.taglio_service import run_ciclo_taglio
         taglio_result = run_ciclo_taglio(db, server, day, rng)
         summary["taglio"] = taglio_result
 
-        # Notifica Delpy
-        from app.services.chat_service import post_delpy
         n_tagliati = len(taglio_result.get("tagliati", []))
         post_delpy(db, server.id,
                    f"[Sistema] Ciclo {server.cycle - 1} concluso. "

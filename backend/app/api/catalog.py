@@ -56,3 +56,10 @@ def licenses() -> dict:
             for tier, spec in tiers.items()
         }
     return out
+
+
+@router.get("/shop")
+def shop_catalog() -> list[dict]:
+    """Catalogo pacchetti shop (prezzi EUR + contenuto anti-P2W)."""
+    from app.services.shop_service import get_catalog
+    return get_catalog()

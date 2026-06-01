@@ -86,6 +86,9 @@ class Agency(Base):
     alliance_id: Mapped[int | None] = mapped_column(ForeignKey("alliances.id"), nullable=True)
     alliance_role: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
+    # §6 F6 — pool di riserva premium (acquisti shop anti-P2W)
+    premium_pool_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     user: Mapped["User"] = relationship(back_populates="agencies")
@@ -224,6 +227,20 @@ class Mission(Base):
     # §12 F5 — pool missioni alleanza e split ricompensa trasferimento
     alliance_id: Mapped[int | None] = mapped_column(ForeignKey("alliances.id"), nullable=True)
     transferred_from_agency_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class ShopTransaction(Base):
+    """§6 F6 — transazione shop (acquisto pacchetti, ticket)."""
+    __tablename__ = "shop_transactions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    agency_id: Mapped[int | None] = mapped_column(ForeignKey("agencies.id"), nullable=True)
+    server_id: Mapped[int] = mapped_column(ForeignKey("servers.id"))
+    package_key: Mapped[str] = mapped_column(String(60))
+    price_eur: Mapped[float] = mapped_column(Float)
+    agenda_2030_eur: Mapped[float] = mapped_column(Float)
+    cycle_at_purchase: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class Alliance(Base):

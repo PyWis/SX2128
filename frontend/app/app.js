@@ -461,6 +461,79 @@ function renderMissions(missions, vehicles, fighters) {
   </div>`;
 }
 
+/* ── F6: Shop ── */
+function renderShop(ag, catalog, pool, transactions) {
+  const poolSize = pool.pool_size || 0;
+  const poolDetail = pool.pool
+    ? Object.entries(pool.pool).map(([k, v]) => `${v}× ${k}`).join(", ")
+    : "vuoto";
+
+  const pkgCards = catalog.map(p => {
+    const isPlus = p.package_type === "plus";
+    const unitDesc = isPlus
+      ? `${p.pilots} piloti + ${p.fighters} combattenti${p.vehicle ? " + 1 vettore" : ""}`
+      : p.desc;
+    const agenda = `Agenda 2030: ${p.agenda_2030_eur}€`;
+    const typeTag = isPlus
+      ? `<span class="pill">Plus</span>`
+      : `<span class="pill warn">${p.package_type === "ticket_pro" ? "Pro" : "Campioni"}</span>`;
+    return `
+    <div style="border:1px solid var(--border);border-radius:8px;padding:14px;display:flex;flex-direction:column;gap:8px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
+        <div>
+          <b>${p.nome}</b> ${typeTag}
+          <br><small class="muted">${unitDesc}</small>
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:18px;font-weight:700">${p.price_eur.toFixed(2)} €</div>
+          <small class="muted">${agenda}</small>
+        </div>
+      </div>
+      <button class="sm" onclick="doBuyPackage('${p.key}')">Acquista</button>
+    </div>`;
+  }).join("");
+
+  const txRows = transactions.slice(0, 10).map(t => `
+    <tr>
+      <td>${t.package_key}</td>
+      <td>${t.price_eur.toFixed(2)} €</td>
+      <td class="ok">${t.agenda_2030_eur.toFixed(2)} €</td>
+      <td>Ciclo ${t.cycle_at_purchase}</td>
+      <td><small class="muted">${new Date(t.created_at).toLocaleDateString()}</small></td>
+    </tr>`).join("");
+
+  return `
+  <section class="card">
+    <h2>Pool di Riserva Premium §5.19</h2>
+    <div class="grid" style="margin-bottom:12px">
+      ${stat("Unità in pool", poolSize)}
+      ${stat("Dettaglio", poolDetail)}
+    </div>
+    ${poolSize > 0 ? `
+    <div class="row" style="flex-wrap:wrap;gap:8px">
+      <button class="sm" onclick="doRedeem('pilot')">Riscatta Pilota</button>
+      <button class="sm ghost" onclick="doRedeem('fighter')">Riscatta Combattente</button>
+      <button class="sm ghost" onclick="doRedeem('vehicle')">Riscatta Vettore</button>
+    </div>
+    <div id="shop-pool-err" class="err"></div>` : ""}
+  </section>
+  <section class="card">
+    <h2>Catalogo Shop <span class="muted" style="font-size:12px">— anti-P2W: max 1 pacchetto Plus/ciclo, max 1/giorno</span></h2>
+    <div id="shop-err" class="err"></div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;margin-top:10px">
+      ${pkgCards}
+    </div>
+  </section>
+  ${transactions.length ? `
+  <section class="card">
+    <h2>Storico Acquisti — Tracciabilità Agenda 2030</h2>
+    <table>
+      <thead><tr><th>Pacchetto</th><th>Prezzo</th><th>Agenda 2030 (10%)</th><th>Ciclo</th><th>Data</th></tr></thead>
+      <tbody>${txRows}</tbody>
+    </table>
+  </section>` : ""}`;
+}
+
 /* ── F5: Classifica ── */
 function renderClassifica(classifica, myAgencyId) {
   if (!classifica.length) return '<section class="card"><h2>Classifica</h2><p class="muted">Nessun dato — avanza il tick.</p></section>';
@@ -614,6 +687,7 @@ function viewDashboard(ag, pilots, fighters, vehicles, missions) {
     { id: "classifica", label: "Classifica" },
     { id: "alleanze", label: ag.alliance_id ? "Alleanza ✦" : "Alleanze" },
     { id: "chat", label: "Chat" },
+    { id: "shop", label: "Shop 🛡" },
   ];
   const tabBar = tabs.map(t =>
     `<button class="tab${S.tab===t.id?" active":""}" onclick="switchTab('${t.id}')">${t.label}</button>`
@@ -629,6 +703,7 @@ function viewDashboard(ag, pilots, fighters, vehicles, missions) {
   else if (S.tab === "classifica") content = renderClassifica(classifica, ag.id);
   else if (S.tab === "alleanze") content = renderAlleanze(ag, alliance, classifica);
   else if (S.tab === "chat") content = renderChat(ag, chat_delpy, chat_ugnet);
+  else if (S.tab === "shop") content = renderShop(ag, S.data.shopCatalog || [], S.data.shopPool || {}, S.data.shopTx || []);
 
   app().innerHTML = `
   <div class="tabs">${tabBar}</div>
@@ -1023,8 +1098,60 @@ async function refreshData() {
       alliance = list.find(a => a.id === ag.alliance_id) || null;
     }
   }
-  S.data = { ag, pilots, fighters, vehicles, missions, classifica, alliance, chat_delpy, chat_ugnet };
+  // carica dati shop solo se necessario
+  let shopCatalog = S.data.shopCatalog || [];
+  let shopPool = S.data.shopPool || {};
+  let shopTx = S.data.shopTx || [];
+  if (S.tab === "shop" || !shopCatalog.length) {
+    [shopCatalog, shopPool, shopTx] = await Promise.all([
+      req("/api/catalog/shop").catch(() => []),
+      req(`/api/shop/${sid}/pool`).catch(() => ({})),
+      req(`/api/shop/${sid}/transactions`).catch(() => []),
+    ]);
+  }
+
+  S.data = { ag, pilots, fighters, vehicles, missions, classifica, alliance,
+             chat_delpy, chat_ugnet, shopCatalog, shopPool, shopTx };
   viewDashboard(ag, pilots, fighters, vehicles, missions);
+}
+
+/* ────────────────────────── F6: Shop actions ────────────────────────── */
+async function doBuyPackage(packageKey) {
+  const errEl = $("shop-err");
+  if (errEl) errEl.textContent = "";
+  try {
+    const d = await req("/api/shop/purchase", {
+      method: "POST", body: { server_id: Number(S.serverId), package_key: packageKey }
+    });
+    logLine(`acquistato "${packageKey}" (${d.price_eur}€ · Agenda 2030: ${d.agenda_2030_eur}€) · pool: ${d.pool_size} unità`);
+    // forza reload shop data
+    S.data.shopCatalog = [];
+    await refreshData();
+  } catch (e) {
+    const el = $("shop-err");
+    if (el) el.textContent = e.message;
+    else logLine("shop err: " + e.message);
+  }
+}
+
+async function doRedeem(unitType) {
+  const errEl = $("shop-pool-err");
+  if (errEl) errEl.textContent = "";
+  try {
+    const d = await req(`/api/shop/${S.serverId}/redeem`, {
+      method: "POST", body: { unit_type: unitType }
+    });
+    const label = unitType === "vehicle"
+      ? `vettore ${d.project}`
+      : `${unitType} "${d.name}"`;
+    logLine(`riscattato ${label} dal pool · rimaste ${d.pool_remaining} unità`);
+    S.data.shopCatalog = [];
+    await refreshData();
+  } catch (e) {
+    const el = $("shop-pool-err");
+    if (el) el.textContent = e.message;
+    else logLine("redeem err: " + e.message);
+  }
 }
 
 /* ────────────────────────── F5: Alliance actions ────────────────────────── */
