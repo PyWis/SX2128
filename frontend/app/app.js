@@ -1,5 +1,5 @@
 /* SX2128 — Console Agenzia (SPA vanilla)
-   F2: Personale, Edifici, Vettori, Equipaggiamento */
+   F3: Missioni, Lanci, Combattimento */
 
 const S = {
   token: localStorage.getItem("sx_token") || null,
@@ -9,7 +9,9 @@ const S = {
   recruit_opts: {},
   log: [],
   tab: "overview",
-  data: { ag: null, pilots: [], fighters: [], vehicles: [] },
+  data: { ag: null, pilots: [], fighters: [], vehicles: [], missions: [] },
+  _launchMid: null,
+  _launchIsIntercept: false,
 };
 
 const api = () => document.getElementById("apiBase").value.replace(/\/$/, "");
@@ -330,14 +332,101 @@ function renderVehicles(vehicles, pilots) {
   </div>`;
 }
 
+/* ── missions tab ── */
+
+function _alarmBadge(alarm) {
+  const cls = { verde: "ok", giallo: "warn", arancione: "warn", rosso: "bad" };
+  return `<span class="pill ${cls[alarm]||""}">${alarm.toUpperCase()}</span>`;
+}
+
+function _mtypeLabel(t) {
+  return { terrestre: "Terrestre", lunare: "Lunare", intercept_terra: "Intercett. Terra", intercept_luna: "Intercett. Luna" }[t] || t;
+}
+
+function renderMissions(missions, vehicles, fighters) {
+  const assigned = missions.filter(m => m.status === "assigned");
+  const inflight = missions.filter(m => m.status === "in_progress");
+  const done = missions.filter(m => m.status === "completed" || m.status === "failed");
+
+  const assignedRows = assigned.map(m => `
+    <tr>
+      <td>${_alarmBadge(m.alarm)} ${_mtypeLabel(m.mission_type)}</td>
+      <td>${m.target_lat?.toFixed(1)}°, ${m.target_lon?.toFixed(1)}°</td>
+      <td>Pn ${m.pn}</td>
+      <td>~${m.reward_estimate} R</td>
+      <td>gg ${m.deadline_day}</td>
+      <td><button class="sm" onclick="launchDialog(${m.id},'${m.mission_type}')">Lancia</button></td>
+    </tr>`).join("");
+
+  const inflightRows = inflight.map(m => `
+    <tr>
+      <td>${_alarmBadge(m.alarm)} ${_mtypeLabel(m.mission_type)}</td>
+      <td><span class="pill ok">In volo</span> ${m.sortie_return_day != null ? `ETA gg ${m.sortie_return_day.toFixed(1)}` : "—"}</td>
+      <td>Pn ${m.pn}</td>
+      <td>~${m.reward_estimate} R</td>
+      <td>${m.fighters?.length ? m.fighters.length + " comb." : "—"}</td>
+    </tr>`).join("");
+
+  const doneRows = done.slice(0, 10).map(m => {
+    const ok = m.status === "completed";
+    const res = m.resolution;
+    const detail = res ? `Pg ${res.pg} vs Pn ${res.pn} [eff: ${res.pg_eff} vs ${res.pn_eff}]${res.ricompensa ? " · +" + res.ricompensa + " R" : ""}` : "";
+    return `
+    <tr>
+      <td>${_alarmBadge(m.alarm)} ${_mtypeLabel(m.mission_type)}</td>
+      <td><span class="pill ${ok?"ok":"bad"}">${ok?"Successo":"Fallita"}</span></td>
+      <td>gg ${m.assigned_day}</td>
+      <td colspan="2"><small class="muted">${detail}</small></td>
+    </tr>`;
+  }).join("");
+
+  return `
+  <section class="card">
+    <h2>Missioni Assegnate (${assigned.length})</h2>
+    <div id="mission-err" class="err"></div>
+    ${assigned.length ? `
+    <table>
+      <thead><tr><th>Tipo</th><th>Coord.</th><th>Pn</th><th>Premio</th><th>Scad.</th><th></th></tr></thead>
+      <tbody>${assignedRows}</tbody>
+    </table>` : '<p class="muted">Nessuna missione assegnata. Avanza il giorno con il tick.</p>'}
+  </section>
+  ${inflight.length ? `
+  <section class="card">
+    <h2>Sortie in Volo (${inflight.length})</h2>
+    <table>
+      <thead><tr><th>Tipo</th><th>Stato</th><th>Pn</th><th>Premio est.</th><th>Carichi</th></tr></thead>
+      <tbody>${inflightRows}</tbody>
+    </table>
+  </section>` : ""}
+  ${done.length ? `
+  <section class="card">
+    <h2>Storico Missioni</h2>
+    <table>
+      <thead><tr><th>Tipo</th><th>Esito</th><th>Giorno</th><th colspan="2">Dettaglio combattimento</th></tr></thead>
+      <tbody>${doneRows}</tbody>
+    </table>
+  </section>` : ""}
+  <div id="launch-dialog" style="display:none" class="card">
+    <h3>Lancia Missione</h3>
+    <div id="launch-content"></div>
+    <div class="row" style="margin-top:10px">
+      <button onclick="doLaunchMission()">Lancia</button>
+      <button class="ghost" onclick="closeLDialog()">Annulla</button>
+    </div>
+    <div id="launch-err" class="err"></div>
+    <div id="sim-result" style="margin-top:12px"></div>
+  </div>`;
+}
+
 /* ── main dashboard builder ── */
-function viewDashboard(ag, pilots, fighters, vehicles) {
+function viewDashboard(ag, pilots, fighters, vehicles, missions) {
   const tabs = [
     { id: "overview", label: "Panoramica" },
     { id: "buildings", label: "Edifici" },
     { id: "pilots", label: `Piloti (${pilots.length})` },
     { id: "fighters", label: `Combattenti (${fighters.length})` },
     { id: "vehicles", label: `Vettori (${vehicles.length})` },
+    { id: "missions", label: `Missioni (${missions.filter(m=>m.status==="assigned").length})` },
   ];
   const tabBar = tabs.map(t =>
     `<button class="tab${S.tab===t.id?" active":""}" onclick="switchTab('${t.id}')">${t.label}</button>`
@@ -349,6 +438,7 @@ function viewDashboard(ag, pilots, fighters, vehicles) {
   else if (S.tab === "pilots") content = renderPilots(pilots);
   else if (S.tab === "fighters") content = renderFighters(fighters);
   else if (S.tab === "vehicles") content = renderVehicles(vehicles, pilots);
+  else if (S.tab === "missions") content = renderMissions(missions, vehicles, fighters);
 
   app().innerHTML = `
   <div class="tabs">${tabBar}</div>
@@ -358,7 +448,7 @@ function viewDashboard(ag, pilots, fighters, vehicles) {
 
 function switchTab(tab) {
   S.tab = tab;
-  viewDashboard(S.data.ag, S.data.pilots, S.data.fighters, S.data.vehicles);
+  viewDashboard(S.data.ag, S.data.pilots, S.data.fighters, S.data.vehicles, S.data.missions);
 }
 
 /* ────────────────────────── Actions ────────────────────────── */
@@ -609,17 +699,84 @@ async function doLoadMissiles(vehicleId) {
 
 function closeVDialog() { document.getElementById("vehicle-dialog").style.display = "none"; }
 
+/* Missions — launch dialog */
+function launchDialog(missionId, mtype) {
+  S._launchMid = missionId;
+  S._launchIsIntercept = mtype.startsWith("intercept");
+  const classMap = { terrestre: "mission", lunare: "space_mission", intercept_terra: "fighter", intercept_luna: "space_fighter" };
+  const needed = classMap[mtype];
+  const vs = S.data.vehicles.filter(v => v.status === "barracks" && (!needed || v.vclass === needed));
+  const vOpts = vs.map(v => `<option value="${v.id}">${v.project} (${v.vclass})</option>`).join("");
+  const avail = S.data.fighters.filter(f => f.status === "barracks");
+  const fGrid = avail.map(f => `
+    <label style="display:inline-flex;gap:6px;align-items:center;padding:4px 8px;border:1px solid var(--border);border-radius:4px;cursor:pointer">
+      <input type="checkbox" class="f-sel" value="${f.id}" />
+      ${f.name} (TABI ${f.tabi})
+    </label>`).join(" ");
+  $("launch-content").innerHTML = `
+    <div class="row" style="margin-bottom:10px">
+      <div style="flex:2"><label>Vettore</label>
+        <select id="lVehicle" style="width:100%" onchange="doSimulate(${missionId})">${vOpts || '<option disabled>Nessun vettore adatto disponibile</option>'}</select>
+      </div>
+      <button class="sm ghost" style="align-self:flex-end" onclick="doSimulate(${missionId})">Simula</button>
+    </div>
+    ${!S._launchIsIntercept ? `
+    <div style="margin-bottom:10px">
+      <label>Combattenti (spunta per imbarcare):</label>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">${fGrid || '<span class="muted">Nessun combattente disponibile</span>'}</div>
+    </div>` : ""}`;
+  $("sim-result").innerHTML = "";
+  $("launch-err").textContent = "";
+  $("launch-dialog").style.display = "block";
+}
+
+async function doSimulate(missionId) {
+  const vidEl = $("lVehicle");
+  if (!vidEl || !vidEl.value) return;
+  const fids = Array.from(document.querySelectorAll(".f-sel:checked")).map(e => e.value).join(",");
+  try {
+    const d = await req(`/api/agency/${S.serverId}/missions/${missionId}/simulate?vehicle_id=${vidEl.value}&fighter_ids=${fids}`);
+    const pct = Math.round(d.prob_successo * 100);
+    const cls = pct >= 70 ? "ok" : pct >= 40 ? "warn" : "bad";
+    $("sim-result").innerHTML = `
+      <div style="background:var(--surface2);border-radius:6px;padding:10px">
+        <div class="grid">
+          <div class="stat"><div class="k">Pg (tuo)</div><div class="v ok">${d.pg} <small class="muted">[${d.pg_min}–${d.pg_max}]</small></div></div>
+          <div class="stat"><div class="k">Pn (nemico)</div><div class="v bad">${d.pn} <small class="muted">[${d.pn_min}–${d.pn_max}]</small></div></div>
+          <div class="stat"><div class="k">Prob. Successo</div><div class="v ${cls}">${pct}%</div></div>
+        </div>
+      </div>`;
+  } catch (e) { $("sim-result").innerHTML = `<small class="bad">${e.message}</small>`; }
+}
+
+async function doLaunchMission() {
+  $("launch-err").textContent = "";
+  const vid = Number($("lVehicle")?.value || 0);
+  if (!vid) { $("launch-err").textContent = "Seleziona un vettore"; return; }
+  const fids = Array.from(document.querySelectorAll(".f-sel:checked")).map(e => Number(e.value));
+  try {
+    const d = await req(`/api/agency/${S.serverId}/missions/${S._launchMid}/launch`, {
+      method: "POST", body: { vehicle_id: vid, fighter_ids: fids }
+    });
+    logLine(`missione #${d.mission_id} lanciata · ETA ${d.eta_days.toFixed(1)} gg · rientro gg ${d.return_day.toFixed(1)}`);
+    closeLDialog(); await refreshData();
+  } catch (e) { $("launch-err").textContent = e.message; }
+}
+
+function closeLDialog() { $("launch-dialog").style.display = "none"; }
+
 /* ────────────────────────── Data refresh ────────────────────────── */
 async function refreshData() {
   const sid = S.serverId;
-  const [ag, pilots, fighters, vehicles] = await Promise.all([
+  const [ag, pilots, fighters, vehicles, missions] = await Promise.all([
     req(`/api/agency/${sid}`),
     req(`/api/agency/${sid}/pilots`).catch(() => []),
     req(`/api/agency/${sid}/fighters`).catch(() => []),
     req(`/api/agency/${sid}/vehicles`).catch(() => []),
+    req(`/api/agency/${sid}/missions`).catch(() => []),
   ]);
-  S.data = { ag, pilots, fighters, vehicles };
-  viewDashboard(ag, pilots, fighters, vehicles);
+  S.data = { ag, pilots, fighters, vehicles, missions };
+  viewDashboard(ag, pilots, fighters, vehicles, missions);
 }
 
 /* ────────────────────────── Boot ────────────────────────── */

@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import admin, agency, auth, buildings, catalog, personnel, vehicles_api
+from app.api import admin, agency, auth, buildings, catalog, missions_api, personnel, vehicles_api
 from app.database import init_db
 
 
@@ -43,3 +43,4 @@ app.include_router(catalog.router)
 app.include_router(buildings.router)
 app.include_router(personnel.router)
 app.include_router(vehicles_api.router)
+app.include_router(missions_api.router)

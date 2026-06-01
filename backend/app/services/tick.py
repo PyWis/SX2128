@@ -19,7 +19,8 @@ from app.gamedata.buildings import (
     FIGHTER_LIMITS, FIGHTER_VIT_MAX, FIGHTER_VIT_REGEN,
     HOSPITAL_HEAL_BASE, VIT_MAX_HEAL,
 )
-from app.models.core import Agency, Server
+from app.gamedata.enums import MissionStatus
+from app.models.core import Agency, Mission, Server
 from app.services import economy
 from app.services.missions import assign_daily_missions
 
@@ -79,6 +80,38 @@ def _process_hospital(agency: Agency, rng: random.Random) -> None:
             f.status = "barracks"  # dimissione automatica a piena salute
 
 
+def _resolve_sorties(db: Session, agency: Agency, day: int, rng: random.Random) -> list[dict]:
+    """§9 — risolve le sortie il cui return_day <= giorno corrente."""
+    from app.services.combat import resolve_mission
+
+    logs = []
+    in_progress = db.query(Mission).filter(
+        Mission.agency_id == agency.id,
+        Mission.status == MissionStatus.IN_PROGRESS.value,
+        Mission.sortie_return_day <= day,
+    ).all()
+
+    for mission in in_progress:
+        # recupera vettore e unità
+        vehicle = next((v for v in agency.vehicles if v.id == mission.vehicle_id), None)
+        if not vehicle:
+            mission.status = MissionStatus.FAILED.value
+            continue
+
+        pilot = next((p for p in agency.pilots if p.id == vehicle.pilot_id), None)
+        fighter_ids = mission.fighters_json or []
+        fighters = [f for f in agency.fighters if f.id in fighter_ids]
+
+        log = resolve_mission(mission, vehicle, pilot, fighters, agency, rng)
+        mission.status = (
+            MissionStatus.COMPLETED.value if log["success"]
+            else MissionStatus.FAILED.value
+        )
+        mission.resolution_json = log
+        logs.append(log)
+    return logs
+
+
 def run_tick(db: Session, server: Server, rng: random.Random | None = None) -> dict:
     """Avanza il server di un giorno di gioco e ritorna un riepilogo."""
     from app.models.core import utcnow
@@ -113,8 +146,12 @@ def run_tick(db: Session, server: Server, rng: random.Random | None = None) -> d
         # §4.2/§4.3/§4.4 — completamento addestramenti
         _process_training(agency, day, rng)
 
-        # economia del giorno (le missioni 48h reali verranno collegate al log missioni)
-        ledger = economy.apply_daily(db, agency, missioni_48h=0)
+        # §9 — risoluzione sortie rientrate
+        sortie_logs = _resolve_sorties(db, agency, day, rng)
+
+        # economia del giorno (missioni completate nelle ultime 48h per co-finanziamento)
+        missioni_48h = len([s for s in sortie_logs if s.get("success")])
+        ledger = economy.apply_daily(db, agency, missioni_48h=missioni_48h)
 
         # reset flag reclutamento giornaliero
         agency.recruited_today = False
@@ -123,6 +160,7 @@ def run_tick(db: Session, server: Server, rng: random.Random | None = None) -> d
             "id": agency.id, "saldo": round(agency.balance, 2),
             "netto": round(ledger.netto, 2), "espo": round(agency.espo_today, 2),
             "in_default": agency.in_default,
+            "sortie_risolte": len(sortie_logs),
         })
 
     # assegnazione missioni del nuovo giorno (§9.1)

@@ -209,6 +209,12 @@ class Mission(Base):
     deadline_day: Mapped[int] = mapped_column(Integer, default=0)
     visible_at_hour: Mapped[int] = mapped_column(Integer, default=0)  # ora casuale 0-23
 
+    # §9.10 F3 — sortie: dati di lancio e risoluzione
+    vehicle_id: Mapped[int | None] = mapped_column(ForeignKey("vehicles.id"), nullable=True)
+    fighters_json: Mapped[list | None] = mapped_column(JSON, nullable=True)   # lista ID combattenti
+    sortie_return_day: Mapped[float | None] = mapped_column(Float, nullable=True)  # ETA
+    resolution_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # log combattimento
+
 
 class Alliance(Base):
     """§12."""
