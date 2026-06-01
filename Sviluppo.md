@@ -99,8 +99,13 @@ Lo scaffold full-stack è avviato in [`backend/`](backend/) (Python · FastAPI �
 - **F1 — Tick & Economia**: ✅ tick giornaliero (§0.1), fedeltà lineare con reset (§1), flussi di bilancio +
   default (§2), reclutamento con perk culturali (§3), assegnazione missioni + scaling nemico `E(t)` (§9.1/§9.4),
   formule di combattimento/ricompensa testate (§9.5–9.7), co-finanziamento UG (§10).
-- Test: formule core + flusso end-to-end (auth → server → agenzia → recluta → tick) verdi (`backend/tests/`).
-- **F2–F7**: da implementare (le caselle sotto restano la traccia di lavoro).
+- **F2 — Personale & Edifici**: ✅ upgrade caserma/ospedale/hangar con prerequisiti (§4.1, §5.1, §7);
+  addestramento licenze pilota con progressione tier + perk Europea (§4.2); addestramento stat pilota e
+  combattenti (§4.3, §4.4); gestione ospedale (ricovero/dimissione + guarigione nel tick §5.2);
+  acquisto vettori con sconti culturali + verifica slot hangar (§8); assegnazione pilota↔vettore con
+  controllo licenze (§8); equipaggiamento combattenti 3 slot (§6.1); carica missili su vettori da caccia
+  (§6.2); completamento addestramenti nel tick; SPA vanilla con tabs. Test: 49 verdi (`backend/tests/`).
+- **F3–F7**: da implementare (le caselle sotto restano la traccia di lavoro).
 
 ---
 

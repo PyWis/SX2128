@@ -114,6 +114,8 @@ class Pilot(Base):
     licenses: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(20), default="barracks")   # UnitStatus
     training_until_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # §4.2/§4.3: tipo addestramento in corso ("stat:espo"/"stat:str"/"stat:strs" o "lic:A:bronze")
+    training_info: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
     agency: Mapped["Agency"] = relationship(back_populates="pilots")
 
@@ -133,8 +135,17 @@ class Fighter(Base):
     mov: Mapped[int] = mapped_column(Integer, default=10)
     spa: Mapped[int] = mapped_column(Integer, default=0)
 
+    # §6.1 Equipaggiamento: chiave livello (es. "bronze1") o None = non equipaggiato
+    weapon_key: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    armor_terra_key: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    armor_spazio_key: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
     missions_completed: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(20), default="barracks")   # UnitStatus
+
+    # §4.4 Addestramento stat: giorno di completamento e stat in corso
+    training_until_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    training_stat: Mapped[str | None] = mapped_column(String(10), nullable=True)
 
     agency: Mapped["Agency"] = relationship(back_populates="fighters")
 
@@ -154,6 +165,12 @@ class Vehicle(Base):
     pilot_id: Mapped[int | None] = mapped_column(ForeignKey("pilots.id"), nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="barracks")  # hangar/in_flight/eliminated
     return_day: Mapped[float | None] = mapped_column(Float, nullable=True)  # ETA in giorni di gioco
+
+    # §6.2 Missili (si azzerano al rientro; max 4 totali per vettore)
+    missiles_terra_key: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    missiles_terra_count: Mapped[int] = mapped_column(Integer, default=0)
+    missiles_spazio_key: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    missiles_spazio_count: Mapped[int] = mapped_column(Integer, default=0)
 
     agency: Mapped["Agency"] = relationship(back_populates="vehicles")
 
